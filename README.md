@@ -28,6 +28,11 @@ package is the pattern itself.
 pip install labplan        # NumPy only
 ```
 
+Runnable worked examples live in [`examples/`](examples/): a full
+plan-measure-fit-record loop on a low-pass filter, and a conformal
+certificate wrapped around a deliberately wrong model. Both run as-is
+after the install above.
+
 ## The loop in one example
 
 ```python
