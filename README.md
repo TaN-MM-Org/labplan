@@ -1,6 +1,6 @@
 # labplan
 
-[![PyPI](https://img.shields.io/pypi/v/labplan)](https://pypi.org/project/labplan/) [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22826765-blue)](https://doi.org/10.5281/zenodo.22826765) [![tests](https://github.com/TaN-MM-Org/labplan/actions/workflows/ci.yml/badge.svg)](https://github.com/TaN-MM-Org/labplan/actions)
+[![PyPI](https://img.shields.io/pypi/v/labplan.svg)](https://pypi.org/project/labplan/) [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22826765-blue)](https://doi.org/10.5281/zenodo.22826765) [![tests](https://github.com/TaN-MM-Org/labplan/actions/workflows/ci.yml/badge.svg)](https://github.com/TaN-MM-Org/labplan/actions)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 Every measurement campaign asks the same four questions. Can the
