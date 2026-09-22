@@ -1,12 +1,13 @@
 """Core anchors: on a linear model the fit covariance equals the
-textbook closed form sigma^2 (X^T X)^-1 exactly and the planner
-promises the same matrix; noiseless fits recover the truth; seeded
-Monte Carlo matches the reported error bars; an exactly degenerate
-model (duplicated parameter) is refused by planner and fit alike via
-the scale-invariant rank test; the greedy design obeys the exact
-rank-one determinant identity, reproduces its own rule, and never
-loses to a random subset; and the repeat law 1/sqrt(r) is asserted by
-tiling the design."""
+textbook closed form sigma^2 (X^T X)^-1 (to relative 1e-6) and the
+planner promises the same matrix; noiseless fits recover the truth;
+seeded Monte Carlo matches the reported error bars; an exactly
+degenerate model (duplicated parameter) is refused by planner and fit
+alike via the scale-invariant rank test; the rank-one determinant
+identity holds, and the greedy design never loses to a random subset
+and finds the best pair by exhaustion; the repeat law 1/sqrt(r) is
+asserted by tiling the design; and the finite-difference slopes are
+unit-invariant for tiny parameters and exact near zero."""
 import numpy as np
 import pytest
 
@@ -148,6 +149,54 @@ def test_repeats_law_exact():
         prev = {k: v * np.sqrt(r_need) / np.sqrt(r_need - 1)
                 for k, v in pred.items()}
         assert prev["slope"] > target
+
+
+def test_small_parameters_unit_invariant():
+    """The same RC charging curve written with tau in seconds (1e-9)
+    and in nanoseconds (1.0) must give the same planned error bars
+    and the same noiseless fit. Before 0.1.1 the finite-difference
+    step had an absolute floor of 1e-9, as large as tau itself in
+    seconds: the plan changed with the units, the noiseless fit
+    missed the truth, and a model dividing by such a parameter was
+    refused as non-finite."""
+    f = lambda th, x: th[0] * (1.0 - np.exp(-x[:, 0] / th[1]))
+    ms = Model("rc, seconds", f, ("V0", "tau"), "RC charging, test")
+    mn = Model("rc, ns", f, ("V0", "tau"), "RC charging, test")
+    t = np.linspace(0.2, 5.0, 12)
+    ps = information(ms, [1.0, 1e-9], t * 1e-9, sigmas=0.01)["sigma"]
+    pn = information(mn, [1.0, 1.0], t, sigmas=0.01)["sigma"]
+    assert abs(ps["V0"] - pn["V0"]) < 1e-6 * pn["V0"]
+    assert abs(ps["tau"] * 1e9 - pn["tau"]) < 1e-6 * pn["tau"]
+    y = mn.predict([1.0, 1.0], t)
+    res = fit(ms, t * 1e-9, y, [0.8, 1.3e-9], sigmas=0.01)
+    assert abs(res.values["V0"] - 1.0) < 1e-6
+    assert abs(res.values["tau"] - 1e-9) < 1e-6 * 1e-9
+    inv = Model("ratio", lambda th, x: th[0] * x[:, 0] / th[1],
+                ("a", "c"), "ratio model, test suite")
+    jac = inv.jacobian([1.0, 1e-9], t)
+    assert np.all(np.isfinite(jac))
+    assert np.allclose(jac[:, 1], -t / 1e-18, rtol=1e-6)
+
+
+def test_near_zero_parameter_keeps_a_resolvable_step():
+    """A parameter close to zero on its natural scale -- a slope of
+    1e-12 next to an intercept of 1 -- must still get exact slopes:
+    a purely relative step (1e-18) is lost in floating-point
+    rounding. The line's slopes are known exactly (x and 1), and a
+    noiseless fit of a flat line (true slope 0) must return the
+    textbook covariance sigma^2 (X^T X)^-1."""
+    m = _line()
+    exact = np.column_stack([X[:, 0], np.ones(X.shape[0])])
+    for slope in (1e-12, 1e-300, 0.0):
+        jac = m.jacobian([slope, 1.0], X)
+        assert np.allclose(jac, exact, rtol=1e-6, atol=0.0)
+    sigma = 0.05
+    res = fit(m, X, m.predict([0.0, 0.5], X), [1.0, 0.0],
+              sigmas=sigma)
+    assert abs(res.values["slope"]) < 1e-8
+    assert abs(res.values["intercept"] - 0.5) < 1e-8
+    want = sigma ** 2 * np.linalg.inv(exact.T @ exact)
+    assert np.allclose(res.cov, want, rtol=1e-6, atol=1e-15)
 
 
 def test_model_and_input_refusals():
