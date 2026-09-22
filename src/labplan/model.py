@@ -89,17 +89,40 @@ class Model:
 
     def jacobian(self, theta, x, rel_step=1e-6):
         """d(prediction)/d(parameter) by central differences, one
-        column per parameter."""
+        column per parameter.
+
+        The step is first taken relative to each parameter's own size,
+        rel_step * |theta_j|, so the result does not depend on the
+        units a parameter is written in (a 1e-9 s time constant gets
+        the same relative step as 1 ns). A parameter that is merely
+        close to zero on its natural scale (a slope of 1e-12 next to
+        an offset of 1) would then move the predictions by less than
+        floating-point rounding can resolve; when the change is below
+        1e-8 of the predictions' size, or the parameter is exactly
+        zero, the 0.1.0 step rel_step * max(|theta_j|, 1e-3) is used
+        instead."""
         theta = np.asarray(theta, dtype=float).ravel()
         x = _settings(x)
         jac = np.empty((x.shape[0], self.n_params))
-        for j in range(self.n_params):
-            h = rel_step * max(abs(theta[j]), 1e-3)
+
+        def shifted(j, h):
             tp, tm = theta.copy(), theta.copy()
             tp[j] += h
             tm[j] -= h
-            jac[:, j] = (self.predict(tp, x)
-                         - self.predict(tm, x)) / (2.0 * h)
+            return self.predict(tp, x), self.predict(tm, x)
+
+        for j in range(self.n_params):
+            h = rel_step * abs(theta[j])
+            resolved = False
+            if h > 0.0:
+                fp, fm = shifted(j, h)
+                size = max(np.max(np.abs(fp)), np.max(np.abs(fm)))
+                resolved = np.max(np.abs(fp - fm)) > 1e-8 * size
+            h_old = rel_step * max(abs(theta[j]), 1e-3)
+            if not resolved and h_old != h:
+                h = h_old
+                fp, fm = shifted(j, h)
+            jac[:, j] = (fp - fm) / (2.0 * h)
         return jac
 
 

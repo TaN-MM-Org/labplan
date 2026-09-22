@@ -39,7 +39,7 @@ from .conformal import (conformal_interval, conformal_quantile,
 from .report import audit_record, report_text
 from .records import load_measurements_csv, save_measurements_csv
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "Model", "FitResult", "fit",
     "information", "design", "repeats_for",
