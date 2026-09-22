@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "labplan"
-version = "0.1.0"
+version = "0.1.1"
 description = "Plan the measurement, fit the model, keep the record - exact measurement planning, calibration and audit trails for any lab model"
 readme = "README.md"
 requires-python = ">=3.9"
