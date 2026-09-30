@@ -5,6 +5,108 @@ against a closed form, an exact identity, or seeded simulation
 against an exact formula; the release notes on GitHub carry the full
 anchor lists.
 
+## v0.2.0 - 2026-09-30
+
+### Added
+
+- `propagate(func, theta, cov)`: value, 1-sigma error bar and
+  covariance of any quantity computed from the parameters (a
+  predicted reading, a ratio, a time constant), by first-order
+  propagation `J C J^T` (JCGM 100:2008, sections 5.1.2 and 5.2).
+  Works with a fit's covariance or with a plan's, for expected error
+  bars before measuring. Exact for quantities linear in the
+  parameters; first-order approximation otherwise. A `func` that
+  returns an array with more than one dimension is refused.
+- `Model(..., jac=...)`: optional exact slopes `jac(theta, x) -> (n,
+  p)`, used by `information`, `design` and `fit` instead of finite
+  differences; shape and finiteness are checked.
+  `Model.numeric_jacobian` always returns the finite-difference
+  slopes, so a hand-written `jac` can be compared with them.
+- `design(..., exchange=True)`: after the greedy picks, swaps one
+  chosen candidate for one unused candidate while that increases the
+  information determinant (Fedorov's exchange idea, V. V. Fedorov,
+  Theory of Optimal Experiments, Academic Press (1972)). The default
+  (`exchange=False`) gives the same picks as before.
+- The model's `units` note (text or a dictionary) is now carried into
+  `FitResult.units`, the audit record (`model_units`) and
+  `report_text` (a `units:` line). This lifts a listed limit.
+- `design` now also returns `identifiable` and `cov`.
+
+### Fixed
+
+- Finite-difference slopes for a parameter that is exactly zero (or
+  too small for its relative step to show) used a fixed step of 1e-9
+  in the parameter's units, which can be as large as the parameter's
+  natural scale. That step is now compared with a 10 times smaller
+  one and reduced while the two disagree by more than 1e-6 of the
+  column's largest slope plus a rounding allowance (at most 8 times;
+  the estimate with the smallest disagreement is kept if rounding or
+  noise in the model takes over). Where the old step was accurate the
+  slopes are bit-for-bit unchanged.
+- `repeats_for(target, design(...))` was refused with "the plan is
+  not identifiable" because `design` did not report `identifiable`.
+- The conformal rank `k = ceil((n + 1)(1 - alpha))` was computed in
+  floating point, where `1 - 0.7` is slightly above 0.3; it came out
+  one too large for 255 of the alphas 0.001, 0.002, ..., 0.999 at some
+  n up to 3000 (3595 alpha/n pairs; none at alpha 0.01, 0.02, 0.05,
+  0.1, 0.2 or 0.25). A product within 1e-9 (relative) above an
+  integer is now taken to be that integer, which matches exact
+  rational arithmetic for all 999 alphas and every n up to 3000.
+- A `sigmas` array of the wrong length now raises a `ValueError` that
+  says a single value or one per reading is needed, instead of
+  NumPy's broadcasting message.
+- A `Model` with a dictionary `units` note (as in `examples/01`)
+  raised `TypeError: unhashable type: 'dict'` when hashed, because
+  `Model` is a frozen dataclass. `units` is now left out of the hash
+  (it still counts for `==`).
+
+### Behaviour changes
+
+- Gaussian pulse in seconds (centre 0, width 1 ns, 25 samples from -3
+  to 3 ns, reading error 0.01): planned and fitted error bar on the
+  centre 6.686976e-12 s in 0.1.1, 5.311778e-12 s in 0.2.0 (exact
+  value from the analytic slopes: 5.311777e-12 s).
+- `conformal_quantile(scores, 0.7)` with 9 scores: 4th smallest score
+  in 0.1.1, 3rd smallest in 0.2.0; `coverage_exact(9, 0.7)`: 0.4 in
+  0.1.1, 0.3 in 0.2.0. Results for alpha 0.01, 0.02, 0.05, 0.1, 0.2
+  and 0.25 do not change.
+- `audit_record` has one more key, `model_units` (empty string when
+  the model has no units note); `report_text` prints a `units:` line
+  when it is not empty.
+- `design` returns two more keys (`identifiable`, `cov`).
+- `sigmas` given as any array with exactly one element (for example
+  shape `(1, 1)`) is now read as one value for all readings; in 0.1.1
+  only shapes that NumPy could broadcast were accepted.
+
+### Tests
+
+- 27 new tests (43 in total, 2 to 4 s). New files
+  `tests/test_derivatives_design.py` (zero-parameter slopes against
+  analytic derivatives and against the same model in nanoseconds;
+  bit-identical slopes where the old step was accurate; exact `jac`;
+  exchange against exhaustive search over all subsets, including
+  README example 9; `design`
+  output in `repeats_for`), `tests/test_propagate_records.py`
+  (`propagate` against closed forms, the first-order product formula
+  and seeded simulation; units in records; the conformal rank against
+  Python `fractions` for 999 alphas and n up to 120) and
+  `tests/test_documented_claims.py` (claims the README already made
+  without a test: the covariance of a fit without `sigmas` against
+  `np.linalg.lstsq` and `s^2 (X^T X)^-1`, per-unit planning, the
+  closed form of `repeats_for`, slopes of a nonlinear model against
+  exact derivatives, coverage bounds over many n and alpha, every
+  documented refusal including non-convergence and a parameter no
+  reading responds to, and hashing a model with dictionary units).
+- The suite was also run with Python 3.9, NumPy 1.22.0 and pytest
+  7.0.0 (the CI oldest-dependencies job): 43 passed.
+
+### Changed
+
+- README: new examples 8 to 10 (propagation, exchange design, exact
+  slopes), each with output obtained by running it; example 5 output
+  shows the new `model_units` key; "Corrections", "Limits" and the
+  test descriptions updated.
+
 ## v0.1.1 - 2026-09-22
 
 ### Fixed

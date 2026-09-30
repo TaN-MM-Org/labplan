@@ -15,7 +15,8 @@ questions:
   settings are worth the instrument time, and how many repeats do I
   need for a target error bar?
 - **After measuring:** what are the fitted numbers, and their error
-  bars?
+  bars? And what is the error bar of anything computed from them,
+  such as a predicted reading?
 - **If the model may be wrong:** how wide a band around the
   prediction still covers new measurements at a chosen rate?
 - **Later:** can anyone trace what was fitted, to exactly which data,
@@ -60,6 +61,13 @@ explains why.
   this same formula, which is why the planned error bars and the
   fitted ones agree when the model describes the data (see the
   checks below).
+- **Slopes (Jacobian)** -- how much each prediction changes per unit
+  change of each parameter. `labplan` computes them numerically by
+  default, or uses exact ones you supply.
+- **Propagation of uncertainty** -- turning the error bars (and
+  covariance) of the parameters into the error bar of something
+  computed from them, to first order: exact when that quantity is a
+  straight-line function of the parameters, approximate otherwise.
 - **Identifiable** -- the design can tell the parameters apart. It
   cannot when some combination of parameters changes nothing the
   design can see (for example, two parameters that only ever appear
@@ -113,7 +121,7 @@ over 300 simulated rounds (0.899, against the exact 0.9000 for its
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with labplan 0.1.1. The model, the numbers and the noise are
+printed with labplan 0.2.0. The model, the numbers and the noise are
 illustrative; the random numbers come from fixed seeds, so the
 output is repeatable.
 
@@ -265,13 +273,13 @@ print("survives JSON round trip:", json.loads(json.dumps(rec)) == rec)
 ```
 
 ```
-['chi2', 'chi2_dof', 'condition_number', 'covariance', 'data_sha256', 'model', 'model_reference', 'n_points', 'note', 'operator', 'parameters', 'record', 'software', 'timestamp_utc']
+['chi2', 'chi2_dof', 'condition_number', 'covariance', 'data_sha256', 'model', 'model_reference', 'model_units', 'n_points', 'note', 'operator', 'parameters', 'record', 'software', 'timestamp_utc']
 dbf50525b0aff6ea ...
 survives JSON round trip: True
 ```
 
-The record is a plain dictionary: model name and reference, each
-value with its error bar, the covariance, chi2, the number of points,
+The record is a plain dictionary: model name, reference and units
+note (the model's `units`, empty here), each value with its error bar, the covariance, chi2, the number of points,
 the condition number, the sha256 digest of the fitted data (settings,
 readings and reading errors), the labplan and NumPy versions, a UTC
 timestamp, the operator and a note. `report_text(rec)` turns it into
@@ -346,25 +354,160 @@ Columns are the settings `x1, x2, ...`, the reading `y` and, if
 given, the reading error `sigma`. Values are written in full
 precision (`repr`), so they read back as the identical numbers.
 
+### 8. Error bars of predictions and derived numbers
+
+```python
+import numpy as np
+from labplan import Model, fit, propagate
+
+line = Model("sensor line",
+             lambda th, x: th[0] * x[:, 0] + th[1],
+             param_names=("gain", "offset"),
+             reference="illustrative straight-line sensor model")
+x = np.linspace(0.5, 5.0, 12)
+rng = np.random.default_rng(1)
+y = 2.0 * x + 0.1 + 0.05 * rng.standard_normal(x.size)
+res = fit(line, x, y, theta0=[1.0, 0.0], sigmas=0.05)
+
+# The predicted reading at settings 2.5 and 7.0 (7.0 is outside the
+# measured range, so its error bar is larger).
+pred = propagate(lambda th: line.predict(th, [2.5, 7.0]),
+                 res.theta, res.cov)
+print("predictions:", np.round(pred["value"], 4),
+      "+/-", np.round(pred["sigma"], 4))
+
+# The setting at which the sensor reads 5.0: x = (5.0 - offset) / gain.
+x5 = propagate(lambda th: (5.0 - th[1]) / th[0], res.theta, res.cov)
+print(f"setting for a reading of 5.0: {x5['value']:.4f} +/- {x5['sigma']:.4f}")
+```
+
+```
+predictions: [ 5.1116 14.114 ] +/- [0.0147 0.0458]
+setting for a reading of 5.0: 2.4442 +/- 0.0074
+```
+
+`propagate(func, theta, cov)` takes any function of the parameters
+and returns its value, error bar and covariance, using the
+parameter covariance (and so the correlation between gain and
+offset, which a simple "add the error bars" rule would miss). The
+predictions are straight-line functions of the parameters, so their
+error bars are exact; the setting `(5.0 - offset) / gain` is not, so
+its error bar is the usual first-order approximation. Pass
+`information(...)["cov"]` instead of `res.cov` to get the planned
+error bar of a derived number before measuring.
+
+### 9. Better picks by swapping, and repeats of a chosen design
+
+```python
+import numpy as np
+from labplan import Model, design, repeats_for
+
+decay = Model("decay with background",
+              lambda th, x: th[0] * np.exp(-x[:, 0] / th[1]) + th[2],
+              param_names=("amplitude", "tau", "background"),
+              reference="illustrative exponential decay with background")
+guess = [1.0, 1.0, 0.2]
+candidates = np.linspace(0.0, 3.0, 31)       # 0.0, 0.1, ..., 3.0
+
+greedy = design(decay, guess, candidates, n_pick=3, sigmas=0.01)
+swapped = design(decay, guess, candidates, n_pick=3, sigmas=0.01,
+                 exchange=True)
+for name, out in (("greedy", greedy), ("exchange", swapped)):
+    print(f"{name:8s} settings {np.sort(candidates[out['indices']])}"
+          f"  error bar on tau {out['sigma']['tau']:.4f}")
+
+r, predicted = repeats_for({"tau": 0.01}, swapped)
+print("repeats of the 3-point exchange design for tau +/- 0.01:", r)
+```
+
+```
+greedy   settings [0.  1.1 3. ]  error bar on tau 0.0481
+exchange settings [0.  0.8 3. ]  error bar on tau 0.0451
+repeats of the 3-point exchange design for tau +/- 0.01: 21
+```
+
+The greedy picks are made one at a time and never revisited.
+`exchange=True` then tries replacing each chosen setting by each
+unused one and keeps the best swap, until no swap increases the
+information determinant. Here it moves the middle setting from 1.1
+to 0.8; for this example, checking all 4495 possible triples one
+by one finds the same best triple (a test asserts this). The output of `design` can be
+passed straight to `repeats_for`.
+
+### 10. Exact slopes, and a parameter that starts at zero
+
+```python
+import numpy as np
+from labplan import Model, information
+
+# A Gaussian pulse, with times written in seconds: centre t0, width w.
+def pulse(th, x):
+    return th[0] * np.exp(-0.5 * ((x[:, 0] - th[1]) / th[2]) ** 2)
+
+def pulse_slopes(th, x):              # d(pulse)/d(A, t0, w), by hand
+    u = (x[:, 0] - th[1]) / th[2]
+    e = np.exp(-0.5 * u ** 2)
+    return np.column_stack([e, th[0] * e * u / th[2],
+                            th[0] * e * u ** 2 / th[2]])
+
+numeric = Model("pulse", pulse, ("A", "t0", "w"),
+                reference="illustrative Gaussian pulse")
+exact = Model("pulse", pulse, ("A", "t0", "w"),
+              reference="illustrative Gaussian pulse", jac=pulse_slopes)
+
+t = np.linspace(-3e-9, 3e-9, 25)        # 25 samples from -3 ns to 3 ns
+guess = [1.0, 0.0, 1e-9]                # centre exactly zero, width 1 ns
+diff = np.abs(exact.jacobian(guess, t) - numeric.numeric_jacobian(guess, t))
+print("largest slope difference / largest slope:",
+      f"{diff.max() / np.abs(exact.jacobian(guess, t)).max():.1e}")
+for m in (numeric, exact):
+    s = information(m, guess, t, sigmas=0.01)["sigma"]["t0"]
+    print(f"planned error bar on t0 ({'exact' if m.jac else 'numeric'} slopes): {s:.6e} s")
+```
+
+```
+largest slope difference / largest slope: 3.1e-07
+planned error bar on t0 (numeric slopes): 5.311778e-12 s
+planned error bar on t0 (exact slopes): 5.311777e-12 s
+```
+
+`jac=` gives the model exact slopes, which `information`, `design`
+and `fit` then use; `numeric_jacobian` always computes the numerical
+ones, so you can compare the two once, as here, to catch a mistake
+in the hand-written slopes. The numerical slopes are also good here,
+although the centre `t0` is exactly zero and there is no natural
+step size for it (see "Corrections" below: version 0.1.1 printed
+6.686976e-12 s, 26 % too large, for the numeric line).
+
 ## What is in the package
 
 **The model**
 
-- `Model(name, f, param_names, reference, units="")` -- your
-  prediction function `f(theta, x)` with a name, one name per
+- `Model(name, f, param_names, reference, units="", jac=None)` --
+  your prediction function `f(theta, x)` with a name, one name per
   parameter, and a required `reference` (a paper, a manual, your own
-  derivation note). `units` is an optional free-text note kept on the
-  model. `Model.predict(theta, x)` evaluates `f` with shape and
-  finiteness checks; `Model.jacobian(theta, x)` gives the slope of
-  each prediction with respect to each parameter by central
+  derivation note). `units` is an optional note, free text or a
+  dictionary such as `{"fc": "Hz"}`, that is copied into fit
+  results, audit records and text reports. `jac` is an optional
+  function `jac(theta, x)` returning the exact slopes as an `(n, p)`
+  array (one column per parameter); when given it replaces the
+  numerical slopes everywhere.
+- `Model.predict(theta, x)` evaluates `f` with shape and finiteness
+  checks. `Model.jacobian(theta, x)` gives the slope of each
+  prediction with respect to each parameter: from `jac` if the model
+  has one, otherwise from `Model.numeric_jacobian(theta, x)`.
+- `Model.numeric_jacobian(theta, x)` computes the slopes by central
   differences (it nudges one parameter a small step up and down and
   divides the change in the predictions by the distance between the
-  two parameter values). The step is 1e-6 times the parameter's size;
-  when that is too small to change the predictions measurably (a
-  parameter that is zero, or tiny compared with the rest of the
+  two parameter values). The step is 1e-6 times the parameter's
+  size. When that is too small to change the predictions measurably
+  (a parameter that is zero, or tiny compared with the rest of the
   prediction), it uses the step of version 0.1.0 instead: 1e-6 times
-  the larger of the parameter's size and 1e-3.
-  `Model.n_params` counts the parameters.
+  the larger of the parameter's size and 1e-3. Since 0.2.0 that
+  fallback step is checked against a step 10 times smaller; while
+  the two disagree by more than 1e-6 of the largest slope (plus an
+  allowance for rounding), the smaller step is taken, at most 8
+  times. `Model.n_params` counts the parameters.
 
 **Planning**
 
@@ -373,18 +516,35 @@ precision (`repr`), so they read back as the identical numbers.
   is identifiable, its condition number, the expected error bar of
   each parameter and the covariance. Without `sigmas` the error bars
   are per unit reading error.
-- `design(model, theta, candidates, n_pick, sigmas=None)` -- picks
-  `n_pick` of the candidate settings, one at a time, each time taking
-  the candidate that makes the determinant of the information matrix
-  largest (greedy D-optimal selection; F. Pukelsheim, Optimal Design
-  of Experiments, SIAM (2006)). Returns the chosen indices in pick
-  order, the information matrix, the condition number and the error
-  bars.
+- `design(model, theta, candidates, n_pick, sigmas=None,
+  exchange=False)` -- picks `n_pick` of the candidate settings, one
+  at a time, each time taking the candidate that makes the
+  determinant of the information matrix largest (greedy D-optimal
+  selection; F. Pukelsheim, Optimal Design of Experiments, SIAM
+  (2006)). With `exchange=True` it then swaps one chosen setting for
+  one unused setting while that increases the determinant (the
+  exchange idea of V. V. Fedorov, Theory of Optimal Experiments,
+  Academic Press (1972)). Returns the chosen indices (in pick order,
+  a swapped-in setting taking the place of the one it replaced), the
+  information matrix, `identifiable`, the condition number, the error
+  bars and the covariance; the result can be passed to
+  `repeats_for`.
 - `repeats_for(target_sigma, plan)` -- the number of repeats `r` of a
   planned design needed to bring every error bar down to a target,
   from the rule that `r` repeats divide the error bars by `sqrt(r)`.
   The target is one number for all parameters, or a dictionary
   `{name: target}`. Returns `r` and the error bars at `r` repeats.
+  `plan` is the output of `information` or `design`.
+
+**Error bars of derived numbers**
+
+- `propagate(func, theta, cov)` -- the value, error bar and
+  covariance of `func(theta)` (one number or an array of numbers
+  computed from the parameters), by first-order propagation
+  `J C J^T`, where `C` is the parameter covariance and `J` holds the
+  numerical slopes of `func`. Use the covariance of a fit, or of a
+  plan for the error bars you should expect. Values and error bars
+  come back as plain numbers when `func` returns one number.
 
 **Fitting**
 
@@ -399,8 +559,9 @@ precision (`repr`), so they read back as the identical numbers.
 - `FitResult` -- what `fit` returns: `values` and `sigma`
   (dictionaries by parameter name), `theta` and `cov` (arrays),
   `chi2`, `chi2_dof`, `n_points`, `condition_number`, `n_iter`,
-  `model_name`, `reference` and `data_digest` (the sha256 of the
-  settings, readings and reading errors).
+  `model_name`, `reference`, `units` (the model's note) and
+  `data_digest` (the sha256 of the settings, readings and reading
+  errors).
 
 **When the model may be wrong** (split conformal prediction)
 
@@ -411,12 +572,16 @@ precision (`repr`), so they read back as the identical numbers.
 - `coverage_exact(n, alpha)` -- the exact coverage `k / (n + 1)` for
   scores without ties; it always lies between `1 - alpha` and
   `1 - alpha + 1/(n + 1)`.
+- `alpha` is read as the decimal number you typed: `k` is computed so
+  that `alpha=0.7` means exactly 7/10 (see Corrections below).
 
 **Records**
 
 - `audit_record(result, operator="", note="")` -- a JSON-ready
-  dictionary describing one fit (see example 5).
-- `report_text(record)` -- the same record as readable text.
+  dictionary describing one fit (see example 5), including the
+  model's units note under `model_units`.
+- `report_text(record)` -- the same record as readable text. Records
+  written by 0.1.x, which have no `model_units`, still render.
 - `save_measurements_csv(path, x, y, sigmas=None)` and
   `load_measurements_csv(path)` -- a plain CSV file of measurements;
   loading returns `(x, y, sigmas)`, with `sigmas` `None` when the file
@@ -430,13 +595,18 @@ its inputs and conventions.
 
 `labplan` raises an error instead of guessing when:
 
-- a `Model` has an empty name, a prediction function that cannot be
-  called, missing or repeated parameter names, or a `reference`
-  shorter than 8 characters;
+- a `Model` has an empty name, a prediction function (or `jac`)
+  that cannot be called, missing or repeated parameter names, or a
+  `reference` shorter than 8 characters;
+- `jac` returns an array of the wrong shape or values that are not
+  finite;
 - the prediction function returns the wrong number of values, or
   values that are not finite (infinite or NaN);
 - `theta` has the wrong number of entries, or settings, readings or
-  reading errors are not finite, or reading errors are not positive;
+  reading errors are not finite, or reading errors are not positive,
+  or there is neither one reading error for all readings nor one per
+  reading (since 0.2.0 the message says so, instead of NumPy's
+  broadcasting error);
 - the design cannot tell the parameters apart (condition number above
   1e10 after rescaling, or a parameter that no reading responds to):
   `fit` refuses; `design` refuses when even the full candidate list
@@ -455,6 +625,11 @@ its inputs and conventions.
   outside 0 to 1, or too few scores for the level (the message names
   the minimum); `coverage_exact` refuses the same levels;
   `conformal_interval` refuses a negative or non-finite `q`;
+- `propagate` gets no covariance (`None`, as from a plan that is
+  not identifiable), one of the wrong size, one that is not
+  symmetric or has a negative diagonal, or a `func` that cannot be
+  called, returns non-finite values, or returns an array with more
+  than one dimension (a table instead of a list of numbers);
 - `audit_record` gets an operator or note that is not text, or
   `report_text` gets something that is not an audit record;
 - a measurement file is empty, has an unexpected header, has no data
@@ -463,7 +638,7 @@ its inputs and conventions.
 
 ## How the results are checked
 
-16 automated tests run on every push and pull request, on Python 3.9,
+43 automated tests run on every push and pull request, on Python 3.9,
 3.10, 3.11, 3.12, 3.13 and 3.14, and once more on Python 3.9 with the
 oldest NumPy the package allows (1.22.0, with pytest 7.0.0). The
 numerical checks compare against a formula, an identity or seeded
@@ -500,7 +675,54 @@ from an earlier run. What the tests assert:
   the textbook covariance (relative tolerance 1e-6; added in 0.1.1).
 - Repeating a design 9 times divides every planned error bar by 3, to
   1 part in 10^9; the `r` that `repeats_for` returns meets the target
-  and `r - 1` repeats would not.
+  and `r - 1` repeats would not, and equals `ceil((sigma / target)^2)`
+  for the largest ratio, with the predicted error bars `sigma /
+  sqrt(r)` (relative 1e-12).
+- Without `sigmas`, the fitted covariance equals the ordinary
+  least-squares formula `s^2 (X^T X)^-1` with `s^2` = residual sum of
+  squares / (n - p), and the values equal `np.linalg.lstsq` (relative
+  tolerances 1e-6 and 1e-8). `information` without `sigmas` gives
+  error bars exactly 1/0.05 of those with `sigmas=0.05` (relative
+  1e-12), and fewer settings than parameters are reported not
+  identifiable.
+- Slopes of an exponential decay match the exact derivatives to
+  relative 1e-6 (added in 0.2.0).
+
+**Slopes: parameters at zero and exact slopes** (added in 0.2.0)
+
+- A Gaussian pulse written in seconds with centre `t0 = 0` and width
+  1 ns: every column of the numerical slopes matches the exact
+  derivative to 1e-5 of the column's largest value; the planned error
+  bars match the exact `(J^T W J)^-1` to relative 1e-5, and equal
+  those of the same model written in nanoseconds to relative 1e-5; a
+  noiseless fit in seconds reports the exact error bar on `t0` to
+  relative 1e-5. (With 0.1.1 the slope of `t0` was 31 % off and its
+  planned error bar 26 % too large; this test fails on 0.1.1.)
+- Where the 0.1.0 fallback step was already accurate (a slope of 0 or
+  1e-300 beside an intercept of 1, a phase of 0 in a sine, a rate of
+  0 in an exponential), the slopes are bit-for-bit the central
+  difference with step 1e-9, recomputed by hand in the test; and a
+  model that loses digits in its own arithmetic does not get worse
+  slopes than that step gave.
+- With `jac=`, `jacobian` returns exactly the supplied array, the
+  numerical slopes agree with it to 1e-5 of the largest slope, the
+  planned covariance equals the exact `(J^T W J)^-1` to relative
+  1e-9 (entries compared on the scale `sqrt(C_ii C_jj)`), and a
+  noiseless fit recovers the amplitude to 1e-9 and the width to 1
+  part in 10^9. Wrong shapes, non-finite values and a non-callable
+  `jac` are refused.
+
+**Error bars of derived numbers** (added in 0.2.0)
+
+- `propagate` of straight-line predictions at three settings equals
+  the closed form `A C A^T` (relative 1e-6); at setting 0 it equals
+  the offset's own error bar.
+- For a product `a b` it equals the textbook first-order formula
+  `b^2 C_aa + a^2 C_bb + 2 a b C_ab` (relative 1e-6).
+- In 300 seeded simulated fits (reading error 0.2) the scatter of
+  `4 gain + offset` matches the propagated error bar within 15 %.
+- Propagating with the planned covariance equals propagating with the
+  covariance of a noiseless fit (relative 1e-6).
 
 **Design**
 
@@ -509,7 +731,20 @@ from an earlier run. What the tests assert:
   5-point subsets.
 - Asked for 2 picks on the straight line, it returns the pair with
   the largest determinant among all 105 pairs, found by checking each
-  one.
+  one; asked for 4 of 12 settings on a line, its first two picks are
+  the two ends.
+- With `exchange=True`, on 24 seeded problems (a decay with
+  background, 3 to 5 picks from 12 candidates) the result has the
+  largest determinant of all subsets, found by checking each one, in
+  all 24 cases, while the greedy picks alone miss it in 6; the result
+  is never worse than the greedy one, no single swap improves it, and
+  the returned information matrix belongs to the returned indices;
+  for example 9 above, the exchange triple is the best of all 4495
+  triples and the greedy triple is not (added in 0.2.0).
+- A `design` result gives the same error bars and covariance as
+  `information` on the chosen settings (relative 1e-9), and
+  `repeats_for` returns the same `r` for either (added in 0.2.0; it
+  was refused in 0.1.1).
 - The identity `det(A + g g^T) = det(A) (1 + g^T A^-1 g)`, which
   explains why each greedy pick can only add information, holds to
   1 part in 10^9 on 20 random matrices. (This checks the identity,
@@ -524,6 +759,14 @@ from an earlier run. What the tests assert:
   within 4 binomial standard deviations.
 - Too few scores, alpha outside 0 to 1 and negative scores are
   refused; `conformal_interval` gives `prediction -/+ q`.
+- For every alpha from 0.001 to 0.999 in steps of 0.001 and every n
+  from 1 to 120, `coverage_exact` equals `k / (n + 1)` with `k`
+  computed in exact fractions from the decimal alpha, and refuses
+  exactly when that `k` exceeds n; for alpha 0.01, 0.05, 0.1, 0.2,
+  0.3 and 0.45 the minimum number of scores named in the refusal is
+  the exact one (added in 0.2.0).
+- For n from 1 to 199 and six levels of alpha, `coverage_exact` lies
+  between `1 - alpha` and `1 - alpha + 1/(n + 1)`.
 
 **Records and files**
 
@@ -531,20 +774,58 @@ from an earlier run. What the tests assert:
   `json.dumps` and `json.loads`; its digest is the fit's; changing one
   reading by 1e-9 changes the digest; `report_text` contains the
   expected lines and refuses a non-record.
+- The model's units note (text or a dictionary) reaches the fit
+  result and the audit record, survives the JSON round trip and
+  appears in `report_text`; a record without it (as written by 0.1.x)
+  still renders (added in 0.2.0).
 - Saving and loading a CSV file with 3 setting columns and sigmas
   gives back identical arrays (`np.array_equal`); a file with 1
   setting column and no sigmas loads back with the right shape and
-  `sigmas` `None`; a wrong header is refused.
+  `sigmas` `None`; a wrong header is refused. Awkward values (1/3,
+  1e-300, -2.5e17, pi) come back identical, and an empty file, a file
+  with no data rows, a row of the wrong length, a non-number, a
+  negative sigma and a non-finite reading are each refused.
 - The version in the package matches `pyproject.toml` and
   `CITATION.cff`, and every name in `__all__` exists.
 
-The input refusals of `Model`, `fit` and `design` (short reference,
-non-callable function, repeated names, too few points, negative
-sigmas, too few picks, infinite parameters) are each checked to fire.
-`Model.jacobian` is compared with exact derivatives only in the two
-0.1.1 tests above.
+Every refusal listed in "When it refuses, and why" is checked to
+fire, including a fit that does not converge within `max_iter` steps
+(a `RuntimeError`) and a parameter that no reading responds to (an
+all-zero slope column: `information` reports it not identifiable,
+`fit` and `design` refuse). A `Model` whose `units` note is a
+dictionary can be hashed (used as a dictionary key or in a set), and
+equal models hash equally.
 
 ## Corrections in earlier versions
+
+**0.2.0 fixed three wrong answers.**
+
+- *Slopes for a parameter at zero.* When a parameter was exactly zero
+  (or too small for its relative step to show), 0.1.1 used a fixed
+  step of 1e-9 in the parameter's own units, which can be far too
+  large. For a Gaussian pulse written in seconds, with centre 0 and
+  width 1 ns, that step equals the width: the slope with respect to
+  the centre was 31 % wrong, and both the planned and the fitted
+  error bar on the centre came out as 6.687e-12 s instead of the
+  exact 5.312e-12 s (26 % too large). The step is now checked
+  against a 10 times smaller one and reduced while they disagree;
+  0.2.0 gives 5.312e-12 s. Where the fixed step was already accurate
+  the slopes are unchanged, bit for bit. If you used 0.1.x with a
+  parameter at or near zero whose natural size is far from 1 in its
+  units, please re-run those results.
+- *`repeats_for` refused the output of `design`* with the message
+  "the plan is not identifiable", because `design` did not report
+  `identifiable`. It now does (and also returns `cov`).
+- *Conformal rank for some alpha.* In binary floating point
+  `1 - 0.7` is slightly more than 0.3, so for alpha = 0.7 and n = 9
+  the rank `ceil(10 * 0.3)` came out as 4 instead of 3:
+  `conformal_quantile` returned the 4th smallest score and
+  `coverage_exact(9, 0.7)` returned 0.4 instead of 0.3. In a scan of
+  all alphas 0.001 to 0.999 (steps of 0.001) and n up to 3000 this
+  happened for 255 of the 999 alphas (3595 alpha/n pairs), none of
+  them 0.01, 0.02, 0.05, 0.1, 0.2 or 0.25. In every case the rank was
+  one too large, so the band was slightly wider than needed, never
+  narrower.
 
 **0.1.1 fixed a unit-dependence in the derivative step.** In 0.1.0,
 `Model.jacobian` (used by `information`, `design` and `fit`) never
@@ -578,26 +859,39 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   parameters, they come from a linear approximation around the
   guessed or fitted parameters and are approximate; the planned error
   bars also depend on how good your guess is.
-- Slopes are computed by finite differences, not exact derivatives.
-  A parameter that is exactly zero, or too small for the relative
-  step to show in the predictions, gets an absolute step of 1e-9,
-  which can be too large or too small for a parameter whose natural
-  size is far from 1 (for example a time offset of zero written in
-  seconds when the times involved are nanoseconds); write such a
-  parameter in units where its natural size is near 1, or start it
-  away from zero.
+- Unless you give `jac`, slopes are computed by finite differences,
+  not exact derivatives. For a parameter at zero the step is found by
+  shrinking a 1e-9 step until two successive steps agree; this
+  assumes the model is smooth in that parameter. It checks only
+  shrinking, so a 1e-9 step that is too small for a parameter whose
+  natural size is much larger than 1 (a zero offset written in
+  nanoseconds when the times are seconds) is not enlarged; write such
+  a parameter in units where its natural size is near 1, or give
+  `jac`.
+- `labplan` cannot check a hand-written `jac`; a wrong one gives wrong
+  error bars. Compare it once with `Model.numeric_jacobian`, as in
+  example 10.
+- `propagate` is first order: exact for straight-line functions of
+  the parameters, an approximation otherwise that is good when the
+  function is close to a straight line within about one error bar.
 - `design` is a greedy heuristic: it adds the best single setting at
   each step and does not prove that the chosen set is the best
-  possible. It picks each candidate at most once; use `repeats_for`
-  for repeats.
+  possible. `exchange=True` improves it until no single swap helps,
+  which in the tests reached the best subset every time, but that is
+  still not a proof. Each swap pass tries every chosen setting
+  against every unused one, so with thousands of candidates it is
+  slow. It picks each candidate at most once; use `repeats_for` for
+  repeats.
 - The conformal guarantee is an average over calibration sets and new
   measurements, not a promise at each setting, and it needs the
   calibration data to be exchangeable with the new measurement:
   calibration data from last month's instrument state do not certify
   next month's drift. The tighter bound `1 - alpha + 1/(n + 1)`
-  assumes scores without ties.
-- The `units` note of a `Model` is not written into the audit record
-  or the text report.
+  assumes scores without ties. `alpha` is read to about 9
+  significant digits: an alpha that differs from a "round" value by
+  less than 1e-9 relative is treated as that value.
+- The measurement files are `labplan`'s own CSV layout (`x1, ..., y,
+  sigma`); files with other column names must be converted first.
 - No physics ships with the package. Your model and its `reference`
   carry the physics.
 
@@ -615,10 +909,16 @@ The statistics are standard. Weighted least squares and the
 information matrix are textbook material (e.g. Cox & Hinkley,
 Theoretical Statistics (1974); any statistics text under
 "Cramer-Rao bound"). D-optimal design follows F. Pukelsheim, Optimal
-Design of Experiments, SIAM (2006). Split conformal prediction follows
-Vovk, Gammerman and Shafer, Algorithmic Learning in a Random World,
-Springer (2005); Lei et al., J. Am. Stat. Assoc. 113, 1094 (2018);
-and Angelopoulos and Bates, arXiv:2107.07511.
+Design of Experiments, SIAM (2006), and the swap refinement the
+exchange idea of V. V. Fedorov, Theory of Optimal Experiments,
+Academic Press (1972). First-order propagation of uncertainty with
+covariances is the "law of propagation of uncertainty" of JCGM
+100:2008, Evaluation of measurement data -- Guide to the expression
+of uncertainty in measurement (sections 5.1.2 and 5.2). Split
+conformal prediction follows Vovk, Gammerman and Shafer, Algorithmic
+Learning in a Random World, Springer (2005); Lei et al., J. Am. Stat.
+Assoc. 113, 1094 (2018); and Angelopoulos and Bates,
+arXiv:2107.07511.
 
 ## Citing, support and license
 
