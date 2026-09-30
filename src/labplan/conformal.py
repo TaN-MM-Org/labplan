@@ -32,6 +32,24 @@ __all__ = ["conformal_quantile", "conformal_interval",
            "coverage_exact"]
 
 
+def _rank(n, a):
+    """k = ceil((n + 1)(1 - a)), with alpha read as the number the
+    user typed. In binary floating point 1 - 0.7 is
+    0.30000000000000004, so a plain ceil turns an exact integer such
+    as 10 * 0.3 = 3 into 4. A product within 1e-9 (relative) above an
+    integer is therefore taken to be that integer."""
+    t = (n + 1) * (1.0 - a)
+    return int(np.ceil(t - 1e-9 * max(1.0, t)))
+
+
+def _min_n(a):
+    """The smallest n whose rank _rank(n, a) exists among n scores."""
+    n = max(1, int(np.floor((1.0 - a) / a)) - 1)
+    while _rank(n, a) > n:
+        n += 1
+    return n
+
+
 def conformal_quantile(scores, alpha=0.1):
     """The split-conformal quantile of held-out error scores.
 
@@ -42,7 +60,8 @@ def conformal_quantile(scores, alpha=0.1):
     Returns q such that |new error| <= q with probability >= 1-alpha.
     Refuses when n is too small for the level: the rank
     ceil((n+1)(1-alpha)) must exist among n scores, which needs
-    n >= (1-alpha)/alpha.
+    n >= (1-alpha)/alpha. alpha is read to about 9 significant
+    digits, so alpha=0.7 means 7/10 and n=9 gives k=3 (see `_rank`).
     """
     s = np.asarray(scores, dtype=float).ravel()
     if s.size < 1 or not np.all(np.isfinite(s)) or np.any(s < 0.0):
@@ -52,9 +71,9 @@ def conformal_quantile(scores, alpha=0.1):
     if not (0.0 < a < 1.0):
         raise ValueError("alpha must lie in (0, 1)")
     n = s.size
-    k = int(np.ceil((n + 1) * (1.0 - a)))
+    k = _rank(n, a)
     if k > n:
-        need = int(np.ceil((1.0 - a) / a))
+        need = _min_n(a)
         raise ValueError(
             f"{n} calibration scores cannot certify level "
             f"{1 - a:.3g}: the required rank {k} exceeds n. Collect "
@@ -84,7 +103,7 @@ def coverage_exact(n, alpha):
     a = float(alpha)
     if n < 1 or not (0.0 < a < 1.0):
         raise ValueError("need n >= 1 and alpha in (0, 1)")
-    k = int(np.ceil((n + 1) * (1.0 - a)))
+    k = _rank(n, a)
     if k > n:
         raise ValueError("level not certifiable at this n (see "
                          "conformal_quantile)")

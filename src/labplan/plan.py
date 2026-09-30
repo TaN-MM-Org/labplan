@@ -15,7 +15,9 @@ pick most shrinks the joint parameter uncertainty. The greedy rule is
 transparent and each step can only add information (the rank-one
 determinant identity det(A + g g^T) = det(A)(1 + g^T A^-1 g)), but it
 is a good-practice heuristic, not a proof of the globally best
-subset.
+subset. `design(..., exchange=True)` then improves the greedy set by
+single swaps (V. V. Fedorov, Theory of Optimal Experiments, Academic
+Press (1972)) until no swap helps.
 
 `repeats_for` is a closed form, not a search: repeating a design r
 times scales its covariance by exactly 1/r.
@@ -59,13 +61,25 @@ def information(model: Model, theta, x, sigmas=None):
             "condition_number": cond, "sigma": sigma, "cov": cov}
 
 
-def design(model: Model, theta, candidates, n_pick, sigmas=None):
+def design(model: Model, theta, candidates, n_pick, sigmas=None,
+           exchange=False):
     """Pick the most informative subset of candidate measurements.
 
-    Greedy D-optimal selection over the candidate settings rows.
-    Returns dict(indices, fisher, condition_number, sigma) with the
-    chosen candidate indices in pick order. Refuses when even the
-    full candidate list cannot identify the parameters.
+    Greedy D-optimal selection over the candidate settings rows: each
+    pick is the candidate that makes the determinant of the
+    information matrix largest. With exchange=True the greedy set is
+    then improved by swaps: while replacing one chosen candidate by
+    one unchosen candidate increases the determinant, the best such
+    swap is made. The result is never worse than the greedy set, and
+    no single swap can improve it; that is still not a proof that it
+    is the best subset of all.
+
+    Returns dict(indices, fisher, identifiable, condition_number,
+    sigma, cov) with the chosen candidate indices (in pick order for
+    the greedy selection; a swap puts the new candidate in the place
+    of the one it replaces). The dictionary can be passed to
+    `repeats_for` like the output of `information`. Refuses when even
+    the full candidate list cannot identify the parameters.
     """
     x = _settings(candidates)
     n, p = x.shape[0], model.n_params
@@ -103,10 +117,48 @@ def design(model: Model, theta, candidates, n_pick, sigmas=None):
                 best_j, best_det = j, det
         fs = fs + np.outer(rs[best_j], rs[best_j])
         chosen.append(best_j)
+    if exchange:
+        chosen = _exchange(rs, chosen)
+        fs = eps * np.eye(p) + rs[chosen].T @ rs[chosen]
     fisher = (fs - eps * np.eye(p)) * np.outer(scale, scale)
-    _, cond, _, sigma = invert_information(fisher, model.param_names)
+    ok, cond, cov, sigma = invert_information(fisher, model.param_names)
     return {"indices": list(chosen), "fisher": fisher,
-            "condition_number": cond, "sigma": sigma}
+            "identifiable": ok, "condition_number": cond,
+            "sigma": sigma, "cov": cov}
+
+
+def _logdet(f):
+    sign, val = np.linalg.slogdet(f)
+    return float(val) if sign > 0 else -np.inf
+
+
+def _exchange(rs, chosen, max_passes=1000):
+    """Best-improvement single swaps on the D-criterion (the classical
+    exchange idea of V. V. Fedorov, Theory of Optimal Experiments,
+    Academic Press (1972)),
+    until no swap increases log det by more than 1e-10."""
+    chosen = list(chosen)
+    n = rs.shape[0]
+    f = rs[chosen].T @ rs[chosen]
+    cur = _logdet(f)
+    for _ in range(max_passes):
+        best, swap = cur, None
+        for a, i in enumerate(chosen):
+            fa = f - np.outer(rs[i], rs[i])
+            for j in range(n):
+                if j in chosen:
+                    continue
+                val = _logdet(fa + np.outer(rs[j], rs[j]))
+                bar = best if not np.isfinite(best) \
+                    else best + 1e-10 * max(1.0, abs(best))
+                if val > bar:
+                    best, swap = val, (a, j)
+        if swap is None:
+            return chosen
+        chosen[swap[0]] = swap[1]
+        f = rs[chosen].T @ rs[chosen]
+        cur = _logdet(f)
+    return chosen
 
 
 def repeats_for(target_sigma, plan):

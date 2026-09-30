@@ -25,6 +25,18 @@ from .fit import FitResult
 __all__ = ["audit_record", "report_text"]
 
 
+def _units_for_record(units):
+    """The model's units note in JSON form: text stays text, a
+    dictionary becomes {str: str}, anything else its str()."""
+    if units is None:
+        return ""
+    if isinstance(units, str):
+        return units
+    if isinstance(units, dict):
+        return {str(k): str(v) for k, v in units.items()}
+    return str(units)
+
+
 def audit_record(result: FitResult, operator="", note=""):
     """A JSON-serializable statement of record for one fit.
 
@@ -39,6 +51,7 @@ def audit_record(result: FitResult, operator="", note=""):
         "record": "labplan.calibration",
         "model": result.model_name,
         "model_reference": result.reference,
+        "model_units": _units_for_record(getattr(result, "units", "")),
         "parameters": {
             name: {"value": result.values[name],
                    "sigma": result.sigma[name]}
@@ -71,8 +84,14 @@ def report_text(record):
         "labplan calibration record",
         f"  model:      {record['model']}",
         f"  source:     {record['model_reference']}",
-        f"  when (UTC): {record['timestamp_utc']}",
     ]
+    units = record.get("model_units")
+    if isinstance(units, dict) and units:
+        lines.append("  units:      " + ", ".join(
+            f"{k}: {v}" for k, v in units.items()))
+    elif units:
+        lines.append(f"  units:      {units}")
+    lines.append(f"  when (UTC): {record['timestamp_utc']}")
     if record.get("operator"):
         lines.append(f"  operator:   {record['operator']}")
     lines.append("  parameters:")

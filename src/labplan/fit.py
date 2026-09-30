@@ -37,7 +37,8 @@ class FitResult:
     condition_number : of the unit-free information matrix.
     data_digest : sha256 of the (x, y, sigma) arrays -- the exact
         data this result answers for, recorded for the audit trail.
-    model_name, reference : carried from the model.
+    model_name, reference, units : carried from the model (units
+        since 0.2.0).
     """
 
     values: dict
@@ -52,6 +53,7 @@ class FitResult:
     model_name: str
     reference: str
     data_digest: str
+    units: object = ""
 
 
 def data_digest(x, y=None, sigmas=None):
@@ -164,4 +166,4 @@ def fit(model: Model, x, y, theta0, sigmas=None, max_iter=200,
         theta=th.copy(), cov=cov, chi2=chi2, chi2_dof=chi2_dof,
         n_points=n, condition_number=cond, n_iter=it,
         model_name=model.name, reference=model.reference,
-        data_digest=data_digest(x, y, sig))
+        data_digest=data_digest(x, y, sig), units=model.units)

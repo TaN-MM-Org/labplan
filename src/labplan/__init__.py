@@ -17,7 +17,10 @@ what is promised before the measurement is what is reported after,
 exactly, whenever the model describes the data. On top of the
 model-based statistics, split conformal prediction supplies
 distribution-free intervals with an exact finite-sample guarantee,
-for the day the model is wrong in ways nobody modeled. And every fit
+for the day the model is wrong in ways nobody modeled; `propagate`
+carries the parameter covariance into the error bar of any number
+computed from the parameters (JCGM 100:2008, sections 5.1.2 and
+5.2). And every fit
 can be turned into an audit record that states what was fitted, to
 exactly which data (sha256), by which software versions, when.
 
@@ -34,15 +37,16 @@ stored number.
 from .model import Model
 from .fit import FitResult, fit
 from .plan import design, information, repeats_for
+from .propagate import propagate
 from .conformal import (conformal_interval, conformal_quantile,
                         coverage_exact)
 from .report import audit_record, report_text
 from .records import load_measurements_csv, save_measurements_csv
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __all__ = [
     "Model", "FitResult", "fit",
-    "information", "design", "repeats_for",
+    "information", "design", "repeats_for", "propagate",
     "conformal_quantile", "conformal_interval", "coverage_exact",
     "audit_record", "report_text",
     "save_measurements_csv", "load_measurements_csv",

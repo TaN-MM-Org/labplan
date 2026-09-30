@@ -55,7 +55,13 @@ def invert_information(fisher, names):
 def check_sigmas(sigmas, n):
     if sigmas is None:
         return None
-    sig = np.broadcast_to(np.asarray(sigmas, dtype=float), (n,)).copy()
+    arr = np.asarray(sigmas, dtype=float)
+    if arr.size != 1 and arr.shape != (n,):
+        raise ValueError(f"sigmas must be one number for all readings "
+                         f"or {n} numbers, one per reading; got shape "
+                         f"{arr.shape}")
+    sig = np.broadcast_to(arr.reshape(()) if arr.size == 1 else arr,
+                          (n,)).copy()
     if np.any(sig <= 0.0) or not np.all(np.isfinite(sig)):
         raise ValueError("sigmas must be finite and positive")
     return sig
