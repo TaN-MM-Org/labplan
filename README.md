@@ -15,8 +15,10 @@ questions:
   settings are worth the instrument time, and how many repeats do I
   need for a target error bar?
 - **After measuring:** what are the fitted numbers, and their error
-  bars? And what is the error bar of anything computed from them,
-  such as a predicted reading?
+  bars? Are the readings consistent with the model and their stated
+  errors? And what is the error bar of anything computed from them,
+  such as a predicted reading? The readings can come straight from an
+  instrument's exported text table.
 - **If the model may be wrong:** how wide a band around the
   prediction still covers new measurements at a chosen rate?
 - **Later:** can anyone trace what was fitted, to exactly which data,
@@ -85,6 +87,9 @@ explains why.
   of freedom** (number of readings
   minus number of parameters) it should be near 1 when the model and
   the stated reading errors agree.
+- **p-value**: here, the probability that chi2 would come out at
+  least as large as it did if the model and the stated reading errors
+  were right. A very small p-value means one of them is wrong.
 - **Conformal prediction** -- a way to put a band around predictions
   from held-out data alone, without trusting the model. The
   **calibration scores** are the absolute errors
@@ -121,7 +126,7 @@ over 300 simulated rounds (0.899, against the exact 0.9000 for its
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with labplan 0.2.0. The model, the numbers and the noise are
+printed with labplan 0.3.0. The model, the numbers and the noise are
 illustrative; the random numbers come from fixed seeds, so the
 output is repeatable.
 
@@ -440,7 +445,7 @@ passed straight to `repeats_for`.
 import numpy as np
 from labplan import Model, information
 
-# A Gaussian pulse, with times written in seconds: centre t0, width w.
+# A Gaussian pulse, with times written in seconds: center t0, width w.
 def pulse(th, x):
     return th[0] * np.exp(-0.5 * ((x[:, 0] - th[1]) / th[2]) ** 2)
 
@@ -456,7 +461,7 @@ exact = Model("pulse", pulse, ("A", "t0", "w"),
               reference="illustrative Gaussian pulse", jac=pulse_slopes)
 
 t = np.linspace(-3e-9, 3e-9, 25)        # 25 samples from -3 ns to 3 ns
-guess = [1.0, 0.0, 1e-9]                # centre exactly zero, width 1 ns
+guess = [1.0, 0.0, 1e-9]                # center exactly zero, width 1 ns
 diff = np.abs(exact.jacobian(guess, t) - numeric.numeric_jacobian(guess, t))
 print("largest slope difference / largest slope:",
       f"{diff.max() / np.abs(exact.jacobian(guess, t)).max():.1e}")
@@ -475,9 +480,114 @@ planned error bar on t0 (exact slopes): 5.311777e-12 s
 and `fit` then use; `numeric_jacobian` always computes the numerical
 ones, so you can compare the two once, as here, to catch a mistake
 in the hand-written slopes. The numerical slopes are also good here,
-although the centre `t0` is exactly zero and there is no natural
+although the center `t0` is exactly zero and there is no natural
 step size for it (see "Corrections" below: version 0.1.1 printed
 6.686976e-12 s, 26 % too large, for the numeric line).
+
+### 11. Are the readings consistent with the model?
+
+```python
+import numpy as np
+from labplan import Model, fit, goodness_of_fit
+
+line = Model("sensor line",
+             lambda th, x: th[0] * x[:, 0] + th[1],
+             param_names=("gain", "offset"),
+             reference="illustrative straight-line sensor model")
+x = np.linspace(0.5, 5.0, 12)
+rng = np.random.default_rng(1)
+y = 2.0 * x + 0.1 + 0.05 * rng.standard_normal(x.size)   # true error 0.05
+
+for stated in (0.05, 0.02):            # the second is understated
+    res = fit(line, x, y, theta0=[1.0, 0.0], sigmas=stated)
+    g = goodness_of_fit(res)
+    print(f"sigmas={stated}: chi2 = {g['chi2']:.2f} for {g['dof']} "
+          f"degrees of freedom, p = {g['p_value']:.3g}, "
+          f"Birge ratio = {g['birge_ratio']:.2f}")
+
+# A curved response fitted with a straight line, with the right errors:
+y_curved = 2.0 * x + 0.1 + 0.05 * x ** 2 + 0.05 * rng.standard_normal(x.size)
+g = goodness_of_fit(fit(line, x, y_curved, [1.0, 0.0], sigmas=0.05))
+print(f"curved data: chi2 = {g['chi2']:.1f}, p = {g['p_value']:.2g}")
+```
+
+```
+sigmas=0.05: chi2 = 4.10 for 10 degrees of freedom, p = 0.943, Birge ratio = 0.64
+sigmas=0.02: chi2 = 25.62 for 10 degrees of freedom, p = 0.00429, Birge ratio = 1.60
+curved data: chi2 = 49.0, p = 4e-07
+```
+
+`goodness_of_fit` needs a fit made with `sigmas`. Its `p_value` is
+the probability of a chi2 at least this large if the model and the
+stated errors are both right. With the true reading error (0.05) the
+fit is unremarkable. With an error stated 2.5 times too small, chi2 is
+6.25 times larger and p falls to 0.4 %. A straight line fitted to
+readings that bend gives p = 4e-07 although the errors are right. The
+test cannot say which of the two is wrong, only that something is.
+`p_value_low` (also returned) is the opposite tail: a tiny value
+means the readings agree better than their errors allow, so the
+errors are probably overstated. The Birge ratio `sqrt(chi2 / dof)` is
+the factor by which the stated errors would have to change for chi2
+to equal its degrees of freedom. You can also call
+`goodness_of_fit(chi2=..., dof=...)` with numbers from any other fit.
+
+### 12. Read an instrument's exported table
+
+```python
+import os, tempfile
+from labplan import Model, fit, load_columns
+
+# A sweep as an instrument might export it (illustrative numbers):
+# a comment line, a header, semicolons, decimal commas, extra columns.
+export = """# leakage sweep, bench 2
+Time (s);Bias (V);Current (A);Current error (A);Status
+0;0,5;1,04E-12;5E-14;OK
+2;1,0;2,01E-12;5E-14;OK
+4;1,5;3,05E-12;5E-14;OK
+6;2,0;3,98E-12;5E-14;OK
+8;2,5;5,02E-12;5E-14;OK
+"""
+path = os.path.join(tempfile.mkdtemp(), "sweep.csv")
+with open(path, "w") as fh:
+    fh.write(export)
+
+x, y, s = load_columns(path, x="Bias (V)", y="Current (A)",
+                       sigma="Current error (A)", decimal=",")
+print("bias:", x[:, 0], " current:", y)
+
+leak = Model("leakage", lambda th, x: th[0] * x[:, 0] + th[1],
+             param_names=("G", "I0"),
+             reference="illustrative ohmic leakage with an offset current",
+             units={"G": "S", "I0": "A"})
+res = fit(leak, x, y, theta0=[0.0, 0.0], sigmas=s)
+print(f"G = {res.values['G']:.4e} +/- {res.sigma['G']:.1e} S")
+
+# A cell the instrument marked as overload is refused, not skipped:
+with open(path, "a") as fh:
+    fh.write("10;3,0;OVLD;5E-14;OVERLOAD\n")
+try:
+    load_columns(path, x="Bias (V)", y="Current (A)", decimal=",")
+except ValueError as err:
+    print("refused:", err)
+```
+
+```
+bias: [0.5 1.  1.5 2.  2.5]  current: [1.04e-12 2.01e-12 3.05e-12 3.98e-12 5.02e-12]
+G = 1.9860e-12 +/- 3.2e-14 S
+refused: line 8, column 'Current (A)': 'OVLD' is not a number
+```
+
+`load_columns` reads the columns you name from a delimited text file
+with a header row: comma, tab, semicolon or space separated (found
+from the header, or given with `delimiter=`), with `.` or `,` as the
+decimal mark. Comment lines (starting with `#`) and blank lines are
+skipped, and `skip_rows=` skips a preamble that is not marked as
+comment. Other columns may hold anything and are not read. Every
+value it returns was read as a finite number from the cell you named.
+An empty cell, text such as `OVLD`, `nan` or `inf`, or a row with
+the wrong number of fields stops it with the line number, because
+skipping such rows silently would change the data you fit. The
+result `(x, y, sigmas)` goes straight into `fit`.
 
 ## What is in the package
 
@@ -544,7 +654,10 @@ step size for it (see "Corrections" below: version 0.1.1 printed
   `J C J^T`, where `C` is the parameter covariance and `J` holds the
   numerical slopes of `func`. Use the covariance of a fit, or of a
   plan for the error bars you should expect. Values and error bars
-  come back as plain numbers when `func` returns one number.
+  come back as plain numbers when `func` returns one number. Since
+  0.3.0 a covariance that is not positive semidefinite (one that
+  would give some combination of parameters a negative variance) is
+  refused.
 
 **Fitting**
 
@@ -552,16 +665,33 @@ step size for it (see "Corrections" below: version 0.1.1 printed
   weighted least squares by the Levenberg-Marquardt method (a
   standard step-by-step search that adjusts the parameters until the
   weighted sum of squared differences between readings and
-  predictions stops decreasing), written in NumPy. With `sigmas`, the covariance is the inverse information
-  matrix and chi2 is reported; without them, the covariance is scaled
-  by the residual scatter (chi2 / degrees of freedom), which needs at
-  least one more reading than parameters.
+  predictions stops decreasing), written in NumPy. With `sigmas`, the
+  covariance is the inverse information matrix and chi2 is reported;
+  without them, the covariance is scaled by the residual scatter
+  (chi2 / degrees of freedom), which needs at least one more reading
+  than parameters. The search stops when a step changes the weighted
+  sum of squares by at most `tol` times (one unit + the sum) and
+  moves no parameter by more than 1e-10 times (1 + the largest
+  parameter). With `sigmas` the unit is 1; without them, since 0.3.0,
+  it is the residual variance (at most 1), so the result no longer
+  depends on the units of the readings (see Corrections).
 - `FitResult` -- what `fit` returns: `values` and `sigma`
   (dictionaries by parameter name), `theta` and `cov` (arrays),
   `chi2`, `chi2_dof`, `n_points`, `condition_number`, `n_iter`,
   `model_name`, `reference`, `units` (the model's note) and
   `data_digest` (the sha256 of the settings, readings and reading
   errors).
+- `goodness_of_fit(result)` or `goodness_of_fit(chi2=..., dof=...)`
+  (new in 0.3.0): the chi-squared test. It returns `chi2`, `dof`,
+  `reduced_chi2` (chi2 / dof), `p_value` (probability of a chi2 at
+  least this large if the model and the stated errors are right),
+  `p_value_low` (probability of one at most this large) and
+  `birge_ratio` (`sqrt(chi2 / dof)`; R. T. Birge, Phys. Rev. 40, 207
+  (1932)). The probabilities are the regularized incomplete gamma
+  functions `Q(dof/2, chi2/2)` and `P(dof/2, chi2/2)`, computed by
+  the series and continued fraction of Press et al., Numerical
+  Recipes, 3rd ed. (2007), section 6.2, so that small values keep
+  their full relative precision. See example 11.
 
 **When the model may be wrong** (split conformal prediction)
 
@@ -586,6 +716,13 @@ step size for it (see "Corrections" below: version 0.1.1 printed
   `load_measurements_csv(path)` -- a plain CSV file of measurements;
   loading returns `(x, y, sigmas)`, with `sigmas` `None` when the file
   has no sigma column.
+- `load_columns(path, x, y, sigma=None, delimiter=None, decimal=".",
+  comment="#", skip_rows=0, header=True)` (new in 0.3.0): reads
+  the named columns (header names, or positions counted from 0) of
+  any delimited text table, such as an instrument's or a
+  spreadsheet's export, and returns `(x, y, sigmas)` like
+  `load_measurements_csv`. `x` can be one column or a list of
+  columns. See example 12.
 - `__version__` -- the package version.
 
 Each function's docstring (`help(labplan.fit)`, for example) gives
@@ -615,30 +752,46 @@ its inputs and conventions.
   there are fewer settings than parameters;
 - `fit` gets fewer readings than parameters, or, without `sigmas`,
   no spare reading to estimate the scatter from;
-- `fit` does not converge within `max_iter` steps (a `RuntimeError`);
+- `fit` does not converge within `max_iter` steps (a `RuntimeError`),
+  or gets a `max_iter` below 1 or a negative `tol` (since 0.3.0);
 - `design` is asked for fewer picks than parameters or more picks
-  than candidates;
+  than candidates, or (since 0.3.0) for a number of picks that is not
+  a whole number, such as 2.5, which 0.2.0 silently cut to 2;
 - `repeats_for` gets a plan that is not identifiable (no number of
-  repeats can fix that), an unknown parameter name, or a target that
-  is not positive;
+  repeats can fix that), an unknown parameter name, a target that
+  is not positive, or (since 0.3.0, with a clear message) an empty
+  dictionary of targets;
 - `conformal_quantile` gets negative or non-finite scores, an alpha
   outside 0 to 1, or too few scores for the level (the message names
   the minimum); `coverage_exact` refuses the same levels;
   `conformal_interval` refuses a negative or non-finite `q`;
 - `propagate` gets no covariance (`None`, as from a plan that is
   not identifiable), one of the wrong size, one that is not
-  symmetric or has a negative diagonal, or a `func` that cannot be
+  symmetric or has a negative diagonal, one that is not positive
+  semidefinite (since 0.3.0), or a `func` that cannot be
   called, returns non-finite values, or returns an array with more
   than one dimension (a table instead of a list of numbers);
 - `audit_record` gets an operator or note that is not text, or
   `report_text` gets something that is not an audit record;
+- `goodness_of_fit` gets a fit made without `sigmas` (it has no
+  chi2), zero degrees of freedom, a negative or non-finite chi2, a
+  `dof` that is not a whole number, or both a fit and numbers;
 - a measurement file is empty, has an unexpected header, has no data
   rows, has a row with the wrong number of values, or has a value that
-  is not a number.
+  is not a number;
+- `load_columns` is asked for a column name that is not in the header
+  (the message lists the names that are), a name that appears twice,
+  a position outside the table, or the same column twice; or finds a
+  row with a different number of fields than the header, an empty
+  cell, text, NaN or infinity in a requested column, a reading error
+  that is not positive, a header in which more than one of comma, tab
+  and semicolon occurs (pass `delimiter=`), a `.` in a number when
+  `decimal=","` (a thousands separator?), or no data rows. Each
+  message names the line.
 
 ## How the results are checked
 
-43 automated tests run on every push and pull request, on Python 3.9,
+69 automated tests run on every push and pull request, on Python 3.9,
 3.10, 3.11, 3.12, 3.13 and 3.14, and once more on Python 3.9 with the
 oldest NumPy the package allows (1.22.0, with pytest 7.0.0). The
 numerical checks compare against a formula, an identity or seeded
@@ -690,7 +843,7 @@ from an earlier run. What the tests assert:
 
 **Slopes: parameters at zero and exact slopes** (added in 0.2.0)
 
-- A Gaussian pulse written in seconds with centre `t0 = 0` and width
+- A Gaussian pulse written in seconds with center `t0 = 0` and width
   1 ns: every column of the numerical slopes matches the exact
   derivative to 1e-5 of the column's largest value; the planned error
   bars match the exact `(J^T W J)^-1` to relative 1e-5, and equal
@@ -788,6 +941,50 @@ from an earlier run. What the tests assert:
 - The version in the package matches `pyproject.toml` and
   `CITATION.cff`, and every name in `__all__` exists.
 
+**Added in 0.3.0**
+
+- A straight line fitted without `sigmas` to readings scaled by 1,
+  1e-3, 1e-6, 1e-9, 1e-12 and 1e-15 gives the values of
+  `np.linalg.lstsq` to 1e-6 of their standard errors and the error
+  bars of `s^2 (X^T X)^-1` to relative 1e-6, at every scale (0.2.0
+  was 1.3 standard errors off at 1e-12; this test fails on 0.2.0).
+  Noiseless lines and exponential decays at scales 1, 1e-6 and 1e-12
+  still converge to the truth (relative 1e-12 and 1e-9). A weighted
+  fit of the same small readings equals weighted least squares from
+  `np.linalg.lstsq`.
+- `propagate` accepts a fitted covariance and gives the closed form
+  `a C a^T` (relative 1e-6), but refuses the same covariance copied to
+  3 significant digits (it has a negative eigenvalue; 0.2.0 returned
+  an error bar of 0) and a covariance with a correlation of 2. It
+  accepts a parameter held fixed (zero variance and covariances) and
+  a planned covariance with condition number 4e9, just inside the
+  limit.
+- `goodness_of_fit`: for every number of degrees of freedom from 1 to
+  80 and twelve values of chi2 from 1e-8 to 1200, `p_value` equals
+  the closed form computed in the test with the standard library (the
+  finite Poisson sum for even degrees of freedom; `erfc` plus the
+  recurrence `Q(a + 1, x) = Q(a, x) + x^a e^-x / Gamma(a + 1)` for odd
+  ones) to relative 1e-12, and `p_value + p_value_low = 1`. Small
+  lower tails match `-expm1(-chi2/2)` (2 degrees of freedom) and
+  `erf(sqrt(chi2/2))` (1 degree of freedom) to relative 1e-13.
+  `p_value_low` equals Simpson's-rule integration of the chi-squared
+  density to 1e-10 for 20 cases, and `p_value` matches the fraction
+  of 20000 seeded chi-squared draws above three quantiles within 4.5
+  binomial standard errors. For 400 seeded straight-line fits with
+  correct Gaussian errors the p-values are uniform: each tenth of
+  (0, 1) holds 40 of them within 4.5 binomial standard deviations,
+  and their mean is 1/2 within 4.5 standard errors.
+- `load_columns` reads a commented, comma-separated export with a
+  quoted text column and a blank line back to the numbers typed into
+  it (`np.array_equal`), and agrees exactly with `np.genfromtxt` on
+  the same file; tab, semicolon and space separated tables agree with
+  the written numbers and with `np.genfromtxt`; a semicolon file with
+  decimal commas and a byte-order mark is read correctly; a file
+  written by `save_measurements_csv` reads back identically; a
+  preamble is skipped with `skip_rows`, and a file without a header
+  is read by column positions. Each refusal in the list above fires
+  with the expected message.
+
 Every refusal listed in "When it refuses, and why" is checked to
 fire, including a fit that does not converge within `max_iter` steps
 (a `RuntimeError`) and a parameter that no reading responds to (an
@@ -798,15 +995,53 @@ equal models hash equally.
 
 ## Corrections in earlier versions
 
+**0.3.0 fixed two wrong answers.**
+
+- *A fit without `sigmas` could stop too early when the readings are
+  small numbers in their own units.* Without `sigmas` the quantity
+  being minimized is the sum of squared residuals, in the readings'
+  units squared. The search stopped once a step changed it by less
+  than `tol * (1 + sum)`, and that fixed 1 is enormous for readings
+  of order 1e-12 (a current of a few picoamperes written in
+  amperes): every change was below it, and the fit stopped after its
+  first, still damped, step. For a straight line through 12 such
+  readings (gain 2e-12 A/V, noise 5e-14 A) 0.2.0 returned gain
+  1.99116e-12 and offset 1.35943e-13 after 1 step, 1.30 and 1.15
+  standard errors away from the least-squares answer (2.00051e-12
+  and 1.10355e-13), with error bars about 10 % too large (7.18e-15
+  instead of 6.54e-15 on the gain). With readings of order 1e-9 and
+  relative noise 1e-5 it stopped 0.60 standard errors off. 0.3.0
+  measures the change in units of the residual variance (at most 1)
+  and gives the least-squares answer to 1e-6 of a standard error at
+  every scale tested. Fits with `sigmas` are unchanged bit for bit;
+  fits without them whose residual variance is below 1 may take a
+  step or two more and then change far below their error bars (in
+  300 random straight-line fits with readings from 1e-3 to 1e3, 253
+  gave identical results and the largest change was 3.4e-6 of a
+  standard error, the size of the rounding differences between
+  `fit` and `np.linalg.lstsq` themselves). If you used 0.2.0
+  or earlier without `sigmas` on readings much smaller than 1, please
+  re-run those fits.
+- *`propagate` returned an error bar of 0 for an invalid covariance.*
+  A covariance that is not positive semidefinite gives some
+  combination of parameters a negative variance. That happens, for
+  example, when the covariance of a strongly correlated fit is copied
+  to a few digits: a line measured at settings 100 to 101 has slope
+  and offset correlated at -0.999995, and its covariance rounded to
+  3 significant digits has a negative eigenvalue. With it, the error
+  bar of the predicted reading at 100.5 came out as 0.0 (the right
+  value is 0.0144), with a negative variance in the returned `cov`.
+  Such a matrix is now refused with an explanation.
+
 **0.2.0 fixed three wrong answers.**
 
 - *Slopes for a parameter at zero.* When a parameter was exactly zero
   (or too small for its relative step to show), 0.1.1 used a fixed
   step of 1e-9 in the parameter's own units, which can be far too
-  large. For a Gaussian pulse written in seconds, with centre 0 and
+  large. For a Gaussian pulse written in seconds, with center 0 and
   width 1 ns, that step equals the width: the slope with respect to
-  the centre was 31 % wrong, and both the planned and the fitted
-  error bar on the centre came out as 6.687e-12 s instead of the
+  the center was 31 % wrong, and both the planned and the fitted
+  error bar on the center came out as 6.687e-12 s instead of the
   exact 5.312e-12 s (26 % too large). The step is now checked
   against a 10 times smaller one and reduced while they disagree;
   0.2.0 gives 5.312e-12 s. Where the fixed step was already accurate
@@ -874,6 +1109,15 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 - `propagate` is first order: exact for straight-line functions of
   the parameters, an approximation otherwise that is good when the
   function is close to a straight line within about one error bar.
+  It refuses a covariance that is not positive semidefinite, but it
+  cannot tell when a valid one was rounded: copy covariances at full
+  precision.
+- `goodness_of_fit` assumes independent Gaussian reading errors of the
+  stated size. Its chi-squared distribution is exact for models that
+  are straight-line functions of their parameters and approximate
+  otherwise. A small p-value says that the model or the stated errors
+  are wrong, not which one, and a large one does not prove the model
+  right: with few readings or large errors the test has little power.
 - `design` is a greedy heuristic: it adds the best single setting at
   each step and does not prove that the chosen set is the best
   possible. `exchange=True` improves it until no single swap helps,
@@ -890,14 +1134,19 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   assumes scores without ties. `alpha` is read to about 9
   significant digits: an alpha that differs from a "round" value by
   less than 1e-9 relative is treated as that value.
-- The measurement files are `labplan`'s own CSV layout (`x1, ..., y,
-  sigma`); files with other column names must be converted first.
+- `save_measurements_csv` and `load_measurements_csv` use `labplan`'s
+  own CSV layout (`x1, ..., y, sigma`). Other delimited text tables
+  are read with `load_columns` (since 0.3.0), which needs one header
+  line (or none), one row per line (no line breaks inside quoted
+  fields) and names given exactly as in the header. It does not read
+  binary instrument formats or spreadsheet files (`.xlsx`); export
+  those as text first.
 - No physics ships with the package. Your model and its `reference`
   carry the physics.
 
 ## Where it comes from
 
-Nine research packages in this organization -- covering colour-centre
+Nine research packages in this organization -- covering color-center
 spins, squeezed light, spin-squeezed clocks, Raman maps, single-photon
 emitters, superconducting detectors, band structure, semiconductor
 heterostructures and photonic fabrication -- each grew the same
@@ -911,7 +1160,13 @@ Theoretical Statistics (1974); any statistics text under
 "Cramer-Rao bound"). D-optimal design follows F. Pukelsheim, Optimal
 Design of Experiments, SIAM (2006), and the swap refinement the
 exchange idea of V. V. Fedorov, Theory of Optimal Experiments,
-Academic Press (1972). First-order propagation of uncertainty with
+Academic Press (1972). The chi-squared test computes the regularized
+incomplete gamma functions (NIST Digital Library of Mathematical
+Functions, chapter 8) by the series and continued fraction of W. H.
+Press, S. A. Teukolsky, W. T. Vetterling and B. P. Flannery,
+Numerical Recipes, 3rd ed., Cambridge University Press (2007),
+section 6.2; the Birge ratio is from R. T. Birge, Phys. Rev. 40, 207
+(1932). First-order propagation of uncertainty with
 covariances is the "law of propagation of uncertainty" of JCGM
 100:2008, Evaluation of measurement data -- Guide to the expression
 of uncertainty in measurement (sections 5.1.2 and 5.2). Split

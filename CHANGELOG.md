@@ -5,6 +5,104 @@ against a closed form, an exact identity, or seeded simulation
 against an exact formula; the release notes on GitHub carry the full
 anchor lists.
 
+## 0.3.0 (2026-10-10)
+
+### Added
+
+- `goodness_of_fit(result)` or `goodness_of_fit(chi2=..., dof=...)`:
+  the chi-squared test of a fit made with `sigmas`. Returns `chi2`,
+  `dof`, `reduced_chi2`, `p_value` (probability of a chi2 at least
+  this large if the model and the stated errors are right, the
+  regularized upper incomplete gamma function `Q(dof/2, chi2/2)`),
+  `p_value_low` (`P(dof/2, chi2/2)`, the opposite tail) and
+  `birge_ratio` (`sqrt(chi2/dof)`; R. T. Birge, Phys. Rev. 40, 207
+  (1932)). The incomplete gamma functions are computed in pure Python
+  by the series and continued fraction of Press, Teukolsky,
+  Vetterling and Flannery, Numerical Recipes, 3rd ed., Cambridge
+  University Press (2007), section 6.2, as
+  `labplan.stats.gamma_regularized`; small tail probabilities keep
+  their full relative precision. Refuses a fit without `sigmas`, zero
+  degrees of freedom, and a negative or non-finite chi2.
+- `load_columns(path, x, y, sigma=None, ...)`: reads the named
+  columns (header names, or positions) of a delimited text table such
+  as an instrument or spreadsheet export: comma, tab, semicolon or
+  space separated (detected from the header, or `delimiter=`),
+  decimal point or decimal comma, `#` comment lines, blank lines, a
+  preamble (`skip_rows=`), files with or without a header row, and
+  the byte-order mark some spreadsheet programs write. Returns
+  `(x, y, sigmas)` for `fit`. Refuses, naming the line and column,
+  every cell it would otherwise have to guess at: empty cells, text,
+  NaN and infinity, rows of the wrong length, ambiguous delimiters,
+  unknown or repeated column names, and reading errors that are not
+  positive. This lifts the listed limit that files with other column
+  names had to be converted first.
+- README examples 11 (goodness of fit) and 12 (reading an exported
+  table), each with output obtained by running it.
+
+### Fixed
+
+- `fit` without `sigmas` stopped too early when the readings are
+  small numbers in their own units. The stopping test compared the
+  change of the sum of squared residuals, which has the readings'
+  units squared, with `tol * (1 + sum)`; for readings of order 1e-12
+  every change was below it and the fit returned its first, still
+  damped, Levenberg-Marquardt step. Straight line through 12
+  readings of order 1e-12 (gain 2e-12, offset 1e-13, noise 5e-14):
+  before, gain 1.99116e-12 and offset 1.35943e-13 after 1 step,
+  1.30 and 1.15 standard errors from least squares, with the gain
+  error bar 7.18e-15; after, gain 2.00051e-12 and offset
+  1.10355e-13, equal to `np.linalg.lstsq` within 1e-6 of a standard
+  error, gain error bar 6.54e-15. Readings of order 1e-9 with relative
+  noise 1e-5: before, 0.60 standard errors off; after, within 1e-6.
+  The unit in the test is now the residual variance `cost / (n - p)`,
+  capped at 1, so no fit stops earlier than before. Fits with
+  `sigmas` are unchanged bit for bit (test
+  `test_unweighted_fit_does_not_depend_on_reading_units`, and
+  `test_unweighted_fit_of_small_readings_with_tiny_noise`).
+- `propagate` accepted a covariance that is not positive
+  semidefinite and returned an error bar of 0 with a negative
+  variance in `cov`. Example: the covariance of a straight-line fit
+  at settings 100 to 101 (slope and offset correlated at -0.999995)
+  copied to 3 significant digits; the error bar of the prediction at
+  100.5 was 0.0 before (0.0144 with the full covariance), and a
+  covariance with a correlation of 2 gave 0.0 for the difference of
+  the two parameters. Such a matrix is now refused; the test is made
+  on the eigenvalues of the correlation matrix (tolerance -1e-10), so
+  it does not depend on the units of the parameters, and it accepts
+  every covariance labplan produces, including a planned one with
+  condition number 4e9 (test
+  `test_propagate_refuses_a_covariance_that_is_not_positive`).
+
+### Changed
+
+- Fits without `sigmas` whose residual variance is below 1 may take
+  a step or two more than in 0.2.0. In 300 random straight-line fits
+  with readings from 1e-3 to 1e3, 253 gave identical results and the
+  largest change was 3.4e-6 of a standard error. The printed output of
+  every README example and of `examples/` is unchanged.
+- Clearer refusals: `design` refuses an `n_pick` that is not a whole
+  number (0.2.0 silently cut 2.5 to 2); `repeats_for({})` says the
+  dictionary of targets is empty (0.2.0 raised the bare error of
+  Python's `max()` on an empty sequence); `fit` refuses `max_iter` below 1 (0.2.0 raised
+  "did not converge") and a negative or non-finite `tol`.
+- Type hints on the public functions and `Model` methods.
+- README: American spelling in the prose that was touched ("center",
+  "color"); a p-value entry in the word guide; the new functions,
+  refusals, tests, corrections, limits and sources.
+- Version 0.3.0 in `pyproject.toml`, `labplan.__version__` and
+  `CITATION.cff` (released 2026-10-10).
+
+### Tests
+
+- 26 new tests (69 in total, about 4 s): `tests/test_fixes_030.py`
+  (the two fixes, against `np.linalg.lstsq` and the closed form
+  `a C a^T`, and the clearer refusals) and `tests/test_lab_data.py`
+  (`goodness_of_fit` against closed forms of the chi-squared tail,
+  numerical integration of its density, seeded chi-squared draws and
+  the uniform distribution of p-values of correct fits; `load_columns`
+  against the typed numbers and `np.genfromtxt`, and every refusal).
+  The fix tests fail on 0.2.0.
+
 ## v0.2.0 - 2026-09-30
 
 ### Added
