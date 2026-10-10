@@ -85,7 +85,7 @@ class Model:
         _check_ref(self.reference)
 
     @property
-    def n_params(self):
+    def n_params(self) -> int:
         return len(self.param_names)
 
     def _theta(self, theta):
@@ -95,7 +95,7 @@ class Model:
                              "entries, one per parameter name")
         return theta
 
-    def predict(self, theta, x):
+    def predict(self, theta, x) -> np.ndarray:
         """Evaluate the forward model with shape checking."""
         theta = self._theta(theta)
         x = _settings(x)
@@ -108,7 +108,7 @@ class Model:
                              "finite predictions; check theta and x")
         return y
 
-    def jacobian(self, theta, x, rel_step=1e-6):
+    def jacobian(self, theta, x, rel_step: float = 1e-6) -> np.ndarray:
         """d(prediction)/d(parameter), one column per parameter.
 
         Uses the exact slopes from `jac` when the model has one
@@ -131,7 +131,8 @@ class Model:
                              "theta and x")
         return jac
 
-    def numeric_jacobian(self, theta, x, rel_step=1e-6):
+    def numeric_jacobian(self, theta, x,
+                         rel_step: float = 1e-6) -> np.ndarray:
         """d(prediction)/d(parameter) by central differences, one
         column per parameter, whether or not the model has `jac`.
 

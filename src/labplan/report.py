@@ -37,7 +37,8 @@ def _units_for_record(units):
     return str(units)
 
 
-def audit_record(result: FitResult, operator="", note=""):
+def audit_record(result: FitResult, operator: str = "",
+                 note: str = "") -> dict:
     """A JSON-serializable statement of record for one fit.
 
     operator : who ran the calibration (free text, e.g. a name or an
@@ -75,7 +76,7 @@ def audit_record(result: FitResult, operator="", note=""):
     return rec
 
 
-def report_text(record):
+def report_text(record: dict) -> str:
     """Render an audit record for a human or a logbook."""
     if not isinstance(record, dict) \
             or record.get("record") != "labplan.calibration":

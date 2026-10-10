@@ -50,7 +50,7 @@ def _min_n(a):
     return n
 
 
-def conformal_quantile(scores, alpha=0.1):
+def conformal_quantile(scores, alpha: float = 0.1) -> float:
     """The split-conformal quantile of held-out error scores.
 
     scores : (n,) nonnegative error scores of held-out calibration
@@ -82,7 +82,7 @@ def conformal_quantile(scores, alpha=0.1):
     return float(np.sort(s)[k - 1])
 
 
-def conformal_interval(prediction, q):
+def conformal_interval(prediction, q: float) -> tuple:
     """The interval the guarantee applies to: prediction +/- q.
 
     Returns (lo, hi) arrays matching the prediction's shape.
@@ -94,7 +94,7 @@ def conformal_interval(prediction, q):
     return pred - qv, pred + qv
 
 
-def coverage_exact(n, alpha):
+def coverage_exact(n: int, alpha: float) -> float:
     """The exact marginal coverage for continuous scores:
     ceil((n+1)(1-alpha)) / (n+1). It always lies in
     [1-alpha, 1-alpha + 1/(n+1)] -- the two-sided guarantee of the

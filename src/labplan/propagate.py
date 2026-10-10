@@ -28,8 +28,34 @@ from .model import Model
 
 __all__ = ["propagate"]
 
+# smallest eigenvalue allowed for the correlation matrix of `cov`;
+# rounding in a covariance computed by labplan stays far above it
+_PSD_TOL = 1e-10
 
-def propagate(func, theta, cov):
+
+def _check_positive_semidefinite(cov, d):
+    """Refuse a covariance that is not positive semidefinite.
+
+    Such a matrix gives some combination of parameters a negative
+    variance. Before 0.3.0 `propagate` then clipped the variance of
+    the result to zero and returned an error bar of 0 (and a negative
+    entry in `cov`). The test is made on the correlation matrix
+    C_ij / sqrt(C_ii C_jj), whose eigenvalues do not depend on the
+    units of the parameters."""
+    ds = np.where(d > 0.0, d, 1.0)
+    rho = cov / np.outer(ds, ds)
+    low = float(np.min(np.linalg.eigvalsh(0.5 * (rho + rho.T))))
+    if low < -_PSD_TOL:
+        raise ValueError(
+            "cov is not positive semidefinite (the smallest eigenvalue "
+            f"of its correlation matrix is {low:.3g}): some combination "
+            "of parameters would have a negative variance. Check that "
+            "every correlation lies between -1 and 1, and copy "
+            "covariances at full precision: rounding a strongly "
+            "correlated matrix to a few digits can make it invalid")
+
+
+def propagate(func, theta, cov) -> dict:
     """Value and error bar of quantities computed from the parameters.
 
     func : callable func(theta) -> one number or a 1-D array of
@@ -43,6 +69,9 @@ def propagate(func, theta, cov):
     Returns dict(value, sigma, cov): the computed value(s), their
     1-sigma error bars and their covariance. `value` and `sigma` are
     plain floats when func returns one number, arrays otherwise.
+
+    Refuses a `cov` that is not symmetric, has a negative diagonal or
+    (since 0.3.0) is not positive semidefinite.
     """
     if not callable(func):
         raise ValueError("func must be a callable func(theta)")
@@ -64,6 +93,7 @@ def propagate(func, theta, cov):
             np.abs(cov - cov.T) > 1e-8 * np.outer(d, d)):
         raise ValueError("cov must be symmetric with a non-negative "
                          "diagonal")
+    _check_positive_semidefinite(cov, d)
 
     raw = np.asarray(func(theta), dtype=float)
     if raw.ndim > 1:

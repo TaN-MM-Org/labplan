@@ -32,7 +32,7 @@ from .stats import SINGULAR_MSG, check_sigmas, invert_information
 __all__ = ["information", "design", "repeats_for"]
 
 
-def information(model: Model, theta, x, sigmas=None):
+def information(model: Model, theta, x, sigmas=None) -> dict:
     """Predicted error bars for a planned design.
 
     theta : the working point (your expected parameters -- a previous
@@ -61,8 +61,8 @@ def information(model: Model, theta, x, sigmas=None):
             "condition_number": cond, "sigma": sigma, "cov": cov}
 
 
-def design(model: Model, theta, candidates, n_pick, sigmas=None,
-           exchange=False):
+def design(model: Model, theta, candidates, n_pick: int, sigmas=None,
+           exchange: bool = False) -> dict:
     """Pick the most informative subset of candidate measurements.
 
     Greedy D-optimal selection over the candidate settings rows: each
@@ -83,6 +83,9 @@ def design(model: Model, theta, candidates, n_pick, sigmas=None,
     """
     x = _settings(candidates)
     n, p = x.shape[0], model.n_params
+    if isinstance(n_pick, bool) or not np.isfinite(float(n_pick)) \
+            or float(n_pick) != int(n_pick):
+        raise ValueError(f"n_pick must be a whole number; got {n_pick!r}")
     n_pick = int(n_pick)
     if not p <= n_pick <= n:
         raise ValueError(f"n_pick must be between {p} (the number of "
@@ -161,7 +164,7 @@ def _exchange(rs, chosen, max_passes=1000):
     return chosen
 
 
-def repeats_for(target_sigma, plan):
+def repeats_for(target_sigma, plan: dict) -> tuple:
     """How many repeats of a planned design meet a target error bar?
 
     Exact closed form: r identical repeats of a design multiply its
@@ -180,6 +183,10 @@ def repeats_for(target_sigma, plan):
                          "design cannot -- change the design")
     sigma = plan["sigma"]
     if isinstance(target_sigma, dict):
+        if not target_sigma:
+            raise ValueError("target_sigma is an empty dictionary; name "
+                             "at least one parameter, e.g. "
+                             f"{{{next(iter(sigma))!r}: 0.01}}")
         ratios = []
         for name, t in target_sigma.items():
             if name not in sigma:
