@@ -98,7 +98,11 @@ def coverage_exact(n: int, alpha: float) -> float:
     """The exact marginal coverage for continuous scores:
     ceil((n+1)(1-alpha)) / (n+1). It always lies in
     [1-alpha, 1-alpha + 1/(n+1)] -- the two-sided guarantee of the
-    references, recovered as arithmetic."""
+    references, recovered as arithmetic. n must be a whole number
+    (since 0.4.0; 0.3.0 silently cut 29.9 to 29)."""
+    if isinstance(n, bool) or not np.isfinite(float(n)) \
+            or float(n) != int(n):
+        raise ValueError(f"n must be a whole number; got {n!r}")
     n = int(n)
     a = float(alpha)
     if n < 1 or not (0.0 < a < 1.0):

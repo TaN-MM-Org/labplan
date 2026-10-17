@@ -22,7 +22,11 @@ carries the parameter covariance into the error bar of any number
 computed from the parameters (JCGM 100:2008, sections 5.1.2 and
 5.2); `goodness_of_fit` turns a fit's chi-squared into the
 probability of a value at least that large; `load_columns` reads the
-named columns of an instrument's delimited text export. And every fit
+named columns of an instrument's delimited text export. Since 0.4.0,
+`inverse_predict` reads a calibration curve backwards (the setting of
+a new reading, with its error bar from the reading and from the
+calibration), and `runs_test` checks whether the residuals come in
+long blocks of one sign, a misfit chi-squared cannot see. And every fit
 can be turned into an audit record that states what was fitted, to
 exactly which data (sha256), by which software versions, when.
 
@@ -40,16 +44,19 @@ from .model import Model
 from .fit import FitResult, fit, goodness_of_fit
 from .plan import design, information, repeats_for
 from .propagate import propagate
+from .inverse import inverse_predict
+from .runs import runs_test
 from .conformal import (conformal_interval, conformal_quantile,
                         coverage_exact)
 from .report import audit_record, report_text
 from .records import (load_columns, load_measurements_csv,
                       save_measurements_csv)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "Model", "FitResult", "fit", "goodness_of_fit",
     "information", "design", "repeats_for", "propagate",
+    "inverse_predict", "runs_test",
     "conformal_quantile", "conformal_interval", "coverage_exact",
     "audit_record", "report_text",
     "save_measurements_csv", "load_measurements_csv", "load_columns",

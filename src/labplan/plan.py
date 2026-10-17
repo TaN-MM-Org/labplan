@@ -24,6 +24,8 @@ times scales its covariance by exactly 1/r.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from .model import Model, _settings
@@ -109,17 +111,20 @@ def design(model: Model, theta, candidates, n_pick: int, sigmas=None,
     eps = 1e-12 * float(np.max(np.sum(rs * rs, axis=1)))
     fs = eps * np.eye(p)
     chosen = []
+    free = np.ones(n, dtype=bool)
     for _ in range(n_pick):
+        # all candidate determinants in one batched call (0.4.0); the
+        # scan below keeps the first largest one, as the loop of 0.3.0
+        # did, so the picks are the same
+        idx = np.flatnonzero(free)
+        _, logdets = _slogdets_with(fs, rs, idx)
         best_j, best_det = -1, -np.inf
-        for j in range(n):
-            if j in chosen:
-                continue
-            det = float(np.linalg.slogdet(
-                fs + np.outer(rs[j], rs[j]))[1])
+        for j, det in zip(idx.tolist(), logdets.tolist()):
             if det > best_det:
                 best_j, best_det = j, det
         fs = fs + np.outer(rs[best_j], rs[best_j])
         chosen.append(best_j)
+        free[best_j] = False
     if exchange:
         chosen = _exchange(rs, chosen)
         fs = eps * np.eye(p) + rs[chosen].T @ rs[chosen]
@@ -135,6 +140,31 @@ def _logdet(f):
     return float(val) if sign > 0 else -np.inf
 
 
+# memory for one batch of candidate matrices in `_slogdets_with`
+_BATCH_BYTES = 8 * 2 ** 20
+
+
+def _slogdets_with(base, rs, idx):
+    """Sign and log|det| of base + outer(rs[j], rs[j]) for every j in
+    idx, by batched calls of np.linalg.slogdet (since 0.4.0, instead of
+    one call per candidate). Each matrix is formed by the same
+    floating-point operations as `base + np.outer(rs[j], rs[j])`, and
+    each determinant is computed by the same LAPACK factorization, so
+    every value equals the one-at-a-time result exactly (the tests
+    compare the picks with the 0.3.0 loops)."""
+    p = base.shape[0]
+    m = len(idx)
+    signs = np.empty(m)
+    logdets = np.empty(m)
+    step = max(1, _BATCH_BYTES // (8 * p * p))
+    for start in range(0, m, step):
+        r = rs[idx[start:start + step]]
+        mats = base + r[:, :, None] * r[:, None, :]
+        signs[start:start + step], logdets[start:start + step] = \
+            np.linalg.slogdet(mats)
+    return signs, logdets
+
+
 def _exchange(rs, chosen, max_passes=1000):
     """Best-improvement single swaps on the D-criterion (the classical
     exchange idea of V. V. Fedorov, Theory of Optimal Experiments,
@@ -146,13 +176,19 @@ def _exchange(rs, chosen, max_passes=1000):
     cur = _logdet(f)
     for _ in range(max_passes):
         best, swap = cur, None
+        free = np.ones(n, dtype=bool)
+        free[chosen] = False
+        idx = np.flatnonzero(free)
+        js = idx.tolist()
         for a, i in enumerate(chosen):
             fa = f - np.outer(rs[i], rs[i])
-            for j in range(n):
-                if j in chosen:
-                    continue
-                val = _logdet(fa + np.outer(rs[j], rs[j]))
-                bar = best if not np.isfinite(best) \
+            signs, logdets = _slogdets_with(fa, rs, idx)
+            # the 0.3.0 scan, in the same order and with the same
+            # threshold, over the batched values
+            for j, sign, val in zip(js, signs.tolist(), logdets.tolist()):
+                if not sign > 0:
+                    val = -np.inf
+                bar = best if not math.isfinite(best) \
                     else best + 1e-10 * max(1.0, abs(best))
                 if val > bar:
                     best, swap = val, (a, j)

@@ -153,7 +153,19 @@ class Model:
         than 1e-6 of the column's largest slope (plus a bound on
         floating-point rounding), the smaller step is taken and the
         check repeated, at most 8 times. A fallback step that was
-        already accurate is kept unchanged."""
+        already accurate is kept unchanged.
+
+        Since 0.4.0 a fallback step that reaches or crosses zero for a
+        small parameter, and so makes the model return non-finite
+        predictions (a time constant of 1e-9 s next to a large
+        background, say, where the step is the parameter itself), is
+        divided by 10 until the predictions are finite, at most 8
+        times, and then checked in the same way. Before 0.4.0 the
+        slopes were refused as non-finite.
+
+        rel_step must be a finite positive number (since 0.4.0; 0 or a
+        negative value raised an UnboundLocalError before)."""
+        rel_step = _check_rel_step(rel_step)
         theta = self._theta(theta)
         x = _settings(x)
         jac = np.empty((x.shape[0], self.n_params))
@@ -172,11 +184,47 @@ class Model:
                 resolved = _resolved(fp, fm)
             h_old = rel_step * max(abs(theta[j]), 1e-3)
             if not resolved and h_old != h:
-                fp, fm = shifted(j, h_old)
+                h_old, fp, fm = _finite_fallback(shifted, j, h_old)
                 jac[:, j] = _refine(shifted, j, h_old, fp, fm)
             else:
                 jac[:, j] = (fp - fm) / (2.0 * h)
         return jac
+
+
+def _check_rel_step(rel_step):
+    if isinstance(rel_step, bool):
+        raise ValueError("rel_step must be a finite positive number")
+    try:
+        value = float(rel_step)
+    except (TypeError, ValueError):
+        raise ValueError("rel_step must be a finite positive number") \
+            from None
+    if not (np.isfinite(value) and value > 0.0):
+        raise ValueError(f"rel_step must be a finite positive number; "
+                         f"got {rel_step!r}")
+    return value
+
+
+def _finite_fallback(shifted, j, h, max_cuts=8):
+    """Evaluate the fallback step h; while the model returns
+    non-finite predictions there (the step reached or crossed zero for
+    a small parameter, e.g. tau = 1e-9 with h = 1e-9), divide it by 10,
+    at most max_cuts times. A step that works at once is returned
+    unchanged, so every result that 0.3.0 could compute is unchanged.
+    The step that is finally used is still checked by `_refine`."""
+    first = None
+    for _ in range(max_cuts + 1):
+        try:
+            # a step that crosses zero may divide by zero inside the
+            # model; the warning would be noise, the refusal is kept
+            with np.errstate(divide="ignore", over="ignore",
+                             invalid="ignore"):
+                fp, fm = shifted(j, h)
+            return h, fp, fm
+        except ValueError as exc:
+            first = exc if first is None else first
+            h = h / 10.0
+    raise first
 
 
 def _resolved(fp, fm):
