@@ -5,14 +5,138 @@ against a closed form, an exact identity, or seeded simulation
 against an exact formula; the release notes on GitHub carry the full
 anchor lists.
 
-## Unreleased
+## 0.4.0 (2026-10-17)
 
-- Packaging: the license is now given as the SPDX expression
-  `license = "Apache-2.0"` with `license-files = ["LICENSE"]`, and the
-  old license table and license classifier are gone. Building no longer
-  prints setuptools' deprecation warnings (their support ends on
-  2027-02-18). Building from source now needs setuptools 77 or newer;
-  installing the package is unchanged.
+### Added
+
+- `inverse_predict(model, result, reading, bracket, reading_sigma=0.0,
+  theta=None, cov=None, n_scan=1001, max_slope_change=0.1)`: reads a
+  calibration curve backwards. It finds the setting `x0` at which the
+  model predicts a new reading inside the given bracket (a scan of
+  `n_scan` points for sign changes, then bisection) and its error bar
+  by first-order propagation through the implicit function,
+  `u(x0)^2 = (u(y0)^2 + a^T C a) / s^2` (JCGM 100:2008, section 5.2),
+  split into the part from the reading and the part from the
+  calibration. Several readings give the full covariance (they share
+  the calibration). For a straight line it is the propagation-of-error
+  formula of the NIST/SEMATECH e-Handbook of Statistical Methods,
+  section 2.3.6.7.3
+  (https://itl.nist.gov/div898/handbook/mpc/section3/mpc3673.htm).
+  Refuses a reading the model does not reach in the bracket or reaches
+  more than once, a model that is flat at the solution, and a
+  solution where the slope changes by more than `max_slope_change`
+  (10 %) within one error bar, where a first-order error bar is not
+  reliable.
+- `runs_test(residuals, order=None)`: the runs test of A. Wald and
+  J. Wolfowitz, Ann. Math. Statist. 11, 147-162 (1940),
+  doi:10.1214/aoms/1177731909, on the signs of the residuals ordered
+  by the setting. Finds a systematic misfit (a bend, a drift) that
+  chi-squared misses when the reading errors are overstated. Exact
+  tail probabilities of the number of runs, `p_value` (too few runs)
+  and `p_value_high` (too many), with the mean and standard deviation
+  of the number of runs.
+- Tutorials `examples/tutorial_calibration_curve.py` and
+  `examples/tutorial_decay_on_background.py` (see Tutorials below).
+- README examples 13 (`inverse_predict`) and 14 (`runs_test`), and a
+  Tutorials section, each with output obtained by running it.
+
+### Fixed
+
+- `Model.numeric_jacobian` (and so `information`, `design`, `fit` and
+  `propagate`) refused a valid model at a valid parameter as
+  "non-finite". A parameter whose relative step does not change the
+  predictions by 1e-8 of their largest value falls back to the 0.1.0
+  step `1e-6 * max(|theta|, 1e-3)`, which is 1e-9 for a parameter
+  below 1e-3: for a time constant of 1e-9 s it is the parameter
+  itself. A decay of amplitude 10 on a background of 1000 (any
+  amplitude below about 1/73 of the background), `tau = 1e-9` s,
+  samples from t = 0: `tau - h = 0`, the model divided 0 by 0, and
+  before the fix `information`, `design` and `fit` from that guess
+  raised "the forward function returned non-finite predictions".
+  After: the step is divided by 10 until the model is finite (at most
+  8 times) and then checked as before; the planned error bar on `tau`
+  (reading error 1) is 1.4189183e-10 s, the exact value from the
+  analytic slopes to 6e-9 relative, and the fit equals the fit with
+  exact slopes to 1e-4 of an error bar. Steps that already gave finite
+  predictions are used as before, so every result 0.3.0 could compute
+  is unchanged (test `test_fallback_step_that_reaches_zero_is_cut`,
+  which fails on 0.3.0, and
+  `test_fallback_cut_does_not_touch_working_steps`).
+
+### Changed
+
+- Clearer refusals: `Model.numeric_jacobian` (which `Model.jacobian`
+  uses when the model has no `jac`) refuses a `rel_step` that is not a finite positive number (0.3.0
+  raised `UnboundLocalError` for 0 or a negative step);
+  `coverage_exact` refuses an `n` that is not a whole number (0.3.0
+  returned 0.9 for `coverage_exact(29.9, 0.1)`, the answer for
+  n = 29).
+- Packaging (from the unreleased notes after 0.3.0): the license is
+  given as the SPDX expression `license = "Apache-2.0"` with
+  `license-files = ["LICENSE"]`; the old license table and license
+  classifier are gone. Building no longer prints setuptools'
+  deprecation warnings (their support ends on 2027-02-18). Building
+  from source needs setuptools 77 or newer; installing the package is
+  unchanged.
+- README: the new functions, refusals, tests, the 0.4.0 correction,
+  limits and sources; a word guide entry for residuals and runs and
+  one for inverse prediction. The printed output of README examples 1
+  to 12 and of `examples/01_plan_then_fit.py` and
+  `examples/02_conformal_certificate.py` is unchanged (apart from the
+  version and the timestamp in the record that example 01 prints).
+- Version 0.4.0 in `pyproject.toml`, `labplan.__version__` and
+  `CITATION.cff` (released 2026-10-17).
+
+### Performance
+
+- `design` scores all candidates of a greedy step, and all swaps of
+  one chosen setting in `exchange=True`, with one batched call of
+  `np.linalg.slogdet` (in batches of at most 8 MB) instead of one
+  call per candidate. Each matrix is formed by the same floating-point
+  operations and factorized by the same LAPACK routine, and the scan
+  for the best one keeps the 0.3.0 order and thresholds, so picks and
+  information matrices are identical bit for bit (test
+  `test_batched_design_equals_the_030_loops`, which keeps the 0.3.0
+  loops as the reference, on 21 problems including exact ties).
+  Measured speedup, median of 7 interleaved runs of each version on a
+  shared 2-CPU machine: decay model, 400 candidates, 10 picks: 12.6x
+  (greedy) and 17.1x (exchange); Gaussian peak with sloped background,
+  1000 candidates, 12 picks: 13.0x and 16.7x; decay model, 3000
+  candidates, 6 picks: 19.1x and 14.9x (a second run on the loaded
+  machine gave 8.7x to 24.1x for the same six cases). For example,
+  the 1000-candidate exchange design took 1.56 s in 0.3.0 and 0.094 s
+  in 0.4.0.
+
+### Tutorials
+
+- `examples/tutorial_calibration_curve.py`: plans, calibrates and
+  checks an illustrative quadratic pressure-sensor curve (11 reference
+  pressures), then reads an unknown (5 readings) off the curve with
+  `inverse_predict`, its error bar split into reading noise and
+  calibration. Runs in about 0.2 s.
+- `examples/tutorial_decay_on_background.py`: a 10 mV decay with a
+  time constant near 1 ns on a 1 V level, in seconds and volts (the
+  case 0.3.0 refused): planning the number of averaged traces, fit,
+  chi-squared and runs checks, and the decay rate `1/tau` with
+  `propagate`. Runs in about 0.2 s.
+
+### Tests
+
+- 27 new tests (96 in total, about 6 s; the new ones about 3 s):
+  `tests/test_fixes_040.py` (the fix against exact slopes and the
+  exact information matrix, the clearer refusals, and `design` against
+  the 0.3.0 loops), `tests/test_inverse_runs.py` (`inverse_predict`
+  against the NIST handbook formula, the closed-form inverse of an
+  exponential decay, the closed-form covariance of several readings,
+  20000 seeded replicate calibrations and simulation of the
+  slope-change refusal; `runs_test` against enumeration of all sign
+  arrangements, exact integer arithmetic, seeded false-alarm rates
+  and a bend that chi-squared misses) and `tests/test_tutorials.py`
+  (both tutorials print exactly the output in their docstrings and the
+  README, and their numbers agree with the simulated truth and with
+  each other).
+- The suite was also run with Python 3.9, NumPy 1.22.0 and pytest
+  7.0.0 (the CI oldest-dependencies job): 96 passed.
 
 ## 0.3.0 (2026-10-10)
 

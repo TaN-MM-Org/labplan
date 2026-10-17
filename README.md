@@ -16,9 +16,11 @@ questions:
   need for a target error bar?
 - **After measuring:** what are the fitted numbers, and their error
   bars? Are the readings consistent with the model and their stated
-  errors? And what is the error bar of anything computed from them,
-  such as a predicted reading? The readings can come straight from an
-  instrument's exported text table.
+  errors? Do the residuals wander in a pattern the model misses? What
+  is the error bar of anything computed from them, such as a predicted
+  reading? And, reading the calibration backwards, which setting
+  produced a new reading, and how sure is that? The readings can come
+  straight from an instrument's exported text table.
 - **If the model may be wrong:** how wide a band around the
   prediction still covers new measurements at a chosen rate?
 - **Later:** can anyone trace what was fitted, to exactly which data,
@@ -34,6 +36,7 @@ explains why.
 - [A short guide to the words used here](#a-short-guide-to-the-words-used-here)
 - [Install](#install)
 - [Examples](#examples) (each with the output it prints)
+- [Tutorials](#tutorials) (complete scripts, from data to result)
 - [What is in the package](#what-is-in-the-package)
 - [When it refuses, and why](#when-it-refuses-and-why)
 - [How the results are checked](#how-the-results-are-checked)
@@ -90,6 +93,14 @@ explains why.
 - **p-value**: here, the probability that chi2 would come out at
   least as large as it did if the model and the stated reading errors
   were right. A very small p-value means one of them is wrong.
+- **Residuals and runs**: the residuals are the differences
+  `reading - prediction`. Ordered by the setting, a **run** is a block
+  of residuals with the same sign. A model that misses a bend or a
+  drift leaves long runs, so too few runs is a warning sign.
+- **Inverse prediction**: reading a calibration curve backwards. A
+  new reading `y0` is turned into the setting `x0` at which the model
+  predicts `y0`; its error bar counts both the error of the new
+  reading and the uncertainty of the calibration.
 - **Conformal prediction** -- a way to put a band around predictions
   from held-out data alone, without trusting the model. The
   **calibration scores** are the absolute errors
@@ -121,12 +132,13 @@ an error bar of 5 Hz on the corner frequency), and
 `02_conformal_certificate.py` wraps a conformal band around a
 deliberately wrong straight-line model and measures its coverage
 over 300 simulated rounds (0.899, against the exact 0.9000 for its
-79 calibration points).
+79 calibration points). Two longer tutorials, also in `examples/`,
+are described in [Tutorials](#tutorials) below.
 
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with labplan 0.3.0. The model, the numbers and the noise are
+printed with labplan 0.4.0. The model, the numbers and the noise are
 illustrative; the random numbers come from fixed seeds, so the
 output is repeatable.
 
@@ -589,6 +601,149 @@ the wrong number of fields stops it with the line number, because
 skipping such rows silently would change the data you fit. The
 result `(x, y, sigmas)` goes straight into `fit`.
 
+### 13. Read the calibration backwards: which setting gave this reading?
+
+```python
+import numpy as np
+from labplan import Model, fit, inverse_predict
+
+line = Model("sensor line",
+             lambda th, x: th[0] * x[:, 0] + th[1],
+             param_names=("gain", "offset"),
+             reference="illustrative straight-line sensor model")
+x = np.linspace(0.5, 5.0, 12)
+rng = np.random.default_rng(1)
+y = 2.0 * x + 0.1 + 0.05 * rng.standard_normal(x.size)
+res = fit(line, x, y, theta0=[1.0, 0.0], sigmas=0.05)
+
+# An unknown gives the reading 5.0 (error bar 0.05): which setting?
+out = inverse_predict(line, res, reading=5.0, bracket=(0.5, 5.0),
+                      reading_sigma=0.05)
+print(f"setting = {out['value']:.4f} +/- {out['sigma']:.4f}")
+print(f"  from the reading: {out['sigma_from_reading']:.4f}, "
+      f"from the calibration: {out['sigma_from_parameters']:.4f}")
+
+# A reading the calibrated range does not reach is refused:
+try:
+    inverse_predict(line, res, reading=12.0, bracket=(0.5, 5.0))
+except ValueError as err:
+    print("refused:", err)
+```
+
+```
+setting = 2.4442 +/- 0.0261
+  from the reading: 0.0250, from the calibration: 0.0074
+refused: the model does not reach the reading 12 for settings between 0.5 and 5 (there it runs from 1.11061 to 10.1129); widen the bracket, or check the reading
+```
+
+`inverse_predict` (new in 0.4.0) solves `f(theta, x0) = reading` for
+`x0` inside the `bracket` you give, normally the calibrated range. The
+error bar is first order: `u(x0)^2 = (u(y0)^2 + a^T C a) / s^2`, with
+`s` the slope of the curve at `x0` and `a` the slopes with respect to
+the parameters. For a straight line this is the propagation-of-error
+formula of the NIST/SEMATECH e-Handbook of Statistical Methods,
+section 2.3.6.7.3. The two parts show what limits the result: here the
+reading (0.0250) far more than the calibration (0.0074), so repeating
+the reading of the unknown would help, and recalibrating would not.
+The value is the setting example 8 found with `propagate`; the error
+bar is larger because it now includes the reading's own error. Pass
+an array of readings to get the covariance of several unknowns (they
+share the calibration, so their errors are correlated), or
+`theta=` and `cov=` from `information` to plan before calibrating. A
+reading that the model reaches twice in the bracket (a peak), a curve
+that is flat there, and a curve that bends so much within one error
+bar that the first-order error bar is unreliable are refused.
+
+### 14. Do the residuals wander? The runs test
+
+```python
+import numpy as np
+from labplan import Model, fit, goodness_of_fit, runs_test
+
+line = Model("sensor line",
+             lambda th, x: th[0] * x[:, 0] + th[1],
+             param_names=("gain", "offset"),
+             reference="illustrative straight-line sensor model")
+x = np.linspace(0.5, 5.0, 24)
+rng = np.random.default_rng(2)
+# Readings that bend a little, with errors stated 3 times too large:
+y = 2.0 * x + 0.1 + 0.05 * x ** 2 + 0.05 * rng.standard_normal(x.size)
+res = fit(line, x, y, theta0=[1.0, 0.0], sigmas=0.15)
+print(f"chi2 test: p = {goodness_of_fit(res)['p_value']:.3f}")
+
+r = runs_test(y - line.predict(res.theta, x), order=x)
+print(f"signs: {r['n_positive']} +, {r['n_negative']} -, "
+      f"{r['runs']} runs (expected {r['expected_runs']:.2f} "
+      f"+/- {r['sigma_runs']:.2f}), p = {r['p_value']:.4f}")
+```
+
+```
+chi2 test: p = 0.994
+signs: 9 +, 15 -, 5 runs (expected 12.25 +/- 2.24), p = 0.0010
+```
+
+The readings bend a little, and their stated errors are 3 times too
+large, so chi2 is small and its test sees nothing wrong (p = 0.994).
+The residuals of the straight line, ordered by `x`, tell another
+story: positive at both ends and negative in the middle, they form
+only 5 runs where about 12 are expected. `runs_test` (new in 0.4.0)
+gives the probability of so few runs if the signs were in random order
+(the runs test of A. Wald and J. Wolfowitz, Ann. Math. Statist. 11,
+147 (1940)), computed exactly. `p_value_high` is the opposite tail
+(signs that alternate too often). For residuals of a fit the signs are
+not exactly independent; in the tests this made the test more
+cautious, not less: on 4000 seeded correct straight-line fits each
+with 12 and with 30 readings it raised a false alarm at the 5 % level
+in 0.7 % and 2.8 % of them (3.6 % for 30 independent random signs,
+where the exact test, whose runs come in whole numbers, stays at or
+below 5 %).
+
+## Tutorials
+
+Two complete scripts in [`examples/`](examples/) go from raw data
+(simulated with a fixed seed, so the output is repeatable) to a final
+result with error bars. Each runs in well under a second, and a test
+checks that it still prints exactly what is shown here.
+
+[`tutorial_calibration_curve.py`](examples/tutorial_calibration_curve.py)
+calibrates an illustrative pressure sensor with a curved response
+(`V = c0 + c1 P + c2 P^2`, 11 reference pressures from 0 to 100 kPa),
+plans how well an unknown will be read before calibrating, checks the
+calibration with chi-squared and the runs test, and then reads an
+unknown (5 readings, true pressure 50 kPa) off the curve:
+
+```
+planned error bar at 50 kPa from one reading: 0.0161 kPa
+fitted c0 = 0.09988 +/- 0.00046 V
+fitted c1 = 0.039960 +/- 2.1e-05 V/kPa
+fitted c2 = 9.9567e-06 +/- 2e-07 V/kPa^2
+chi2 = 6.93 for 8 degrees of freedom, p = 0.544
+runs of residual signs: 8 (expected 6.5), p = 0.911
+unknown: mean reading 2.12274 V +/- 0.00027 V (5 readings)
+pressure = 49.9988 +/- 0.0094 kPa
+  from the reading noise:       0.0066 kPa
+  from the calibration curve:   0.0067 kPa
+```
+
+[`tutorial_decay_on_background.py`](examples/tutorial_decay_on_background.py)
+measures a 10 mV decay with a time constant near 1 ns on a steady 1 V
+level, in seconds and volts. It plans how many traces to average for
+an error bar of 10 ps on the time constant, fits the averaged trace,
+checks the fit and reports the decay rate `1/tau` with its error bar.
+labplan 0.3.0 refused this model at the natural first guess
+`tau = 1e-9` s (see Corrections):
+
+```
+planned error bar on tau from one trace: 3.57e-11 s
+traces to average for tau +/- 1e-11 s: 13
+A   = 0.0101 +/- 5.9e-05 V
+tau = 9.9383e-10 +/- 9.8e-12 s
+B   = 0.999993 +/- 1.3e-05 V
+chi2 = 150.0 for 197 degrees of freedom, p = 0.995
+runs of residual signs: 105 (expected 101.0), p = 0.740
+decay rate 1/tau = 1.006e+09 +/- 9.9e+06 1/s
+```
+
 ## What is in the package
 
 **The model**
@@ -617,7 +772,12 @@ result `(x, y, sigmas)` goes straight into `fit`.
   fallback step is checked against a step 10 times smaller; while
   the two disagree by more than 1e-6 of the largest slope (plus an
   allowance for rounding), the smaller step is taken, at most 8
-  times. `Model.n_params` counts the parameters.
+  times. Since 0.4.0, when that fallback step reaches or crosses zero
+  and the model returns values that are not finite there (a time
+  constant of 1e-9 s, say), it is divided by 10 until they are finite,
+  at most 8 times, and then checked the same way. `rel_step` (default
+  1e-6) must be a positive number. `Model.n_params` counts the
+  parameters.
 
 **Planning**
 
@@ -638,7 +798,10 @@ result `(x, y, sigmas)` goes straight into `fit`.
   a swapped-in setting taking the place of the one it replaced), the
   information matrix, `identifiable`, the condition number, the error
   bars and the covariance; the result can be passed to
-  `repeats_for`.
+  `repeats_for`. Since 0.4.0 the candidates are scored in batches,
+  which gives the same picks, bit for bit, 9 to 24 times faster for
+  400 to 3000 candidates (medians of 7 runs on a shared 2-CPU
+  machine).
 - `repeats_for(target_sigma, plan)` -- the number of repeats `r` of a
   planned design needed to bring every error bar down to a target,
   from the rule that `r` repeats divide the error bars by `sqrt(r)`.
@@ -692,6 +855,26 @@ result `(x, y, sigmas)` goes straight into `fit`.
   the series and continued fraction of Press et al., Numerical
   Recipes, 3rd ed. (2007), section 6.2, so that small values keep
   their full relative precision. See example 11.
+- `runs_test(residuals, order=None)` (new in 0.4.0): the runs test of
+  Wald and Wolfowitz on the signs of the residuals, sorted by `order`
+  (normally the settings). Returns `runs`, `n_positive`, `n_negative`,
+  `n_zero` (zero residuals have no sign and are left out),
+  `expected_runs`, `sigma_runs`, `p_value` (probability of this few
+  runs or fewer when the signs are in random order) and `p_value_high`
+  (this many or more). See example 14.
+
+**Reading a calibration backwards**
+
+- `inverse_predict(model, result, reading, bracket, reading_sigma=0.0,
+  theta=None, cov=None, n_scan=1001, max_slope_change=0.1)` (new in
+  0.4.0): the setting `x0` at which the model predicts `reading`,
+  searched in `bracket = (low, high)` (scanned at `n_scan` points, then
+  refined by bisection), with its error bar from the reading's own
+  error `reading_sigma` and from the parameter covariance (of `result`,
+  or `theta=` and `cov=`). Returns `value`, `sigma`, `cov` (for several
+  readings), `slope` (`df/dx` at `x0`), `sigma_from_reading`,
+  `sigma_from_parameters` and `slope_change`. The settings must be one
+  number per measurement. See example 13.
 
 **When the model may be wrong** (split conformal prediction)
 
@@ -765,6 +948,23 @@ its inputs and conventions.
   outside 0 to 1, or too few scores for the level (the message names
   the minimum); `coverage_exact` refuses the same levels;
   `conformal_interval` refuses a negative or non-finite `q`;
+- `inverse_predict` finds no setting in the bracket at which the
+  model reaches the reading (the message gives the range the model
+  covers there), finds more than one (narrow the bracket to one
+  branch), finds the model flat at the solution or equal to the
+  reading over a whole range, or finds that the slope `df/dx` changes
+  by more than `max_slope_change` (10 %) within one error bar of the
+  solution; or gets a bracket that is not two finite numbers with
+  low < high, a reading that is not finite, a negative
+  `reading_sigma`, a `FitResult` of another model, both a result and
+  `theta=`/`cov=`, or a covariance that `propagate` would refuse;
+- `runs_test` gets residuals that are not finite or not a 1-D array,
+  an `order` of the wrong length, fewer than 2 nonzero residuals, or
+  residuals that all have the same sign (no runs to count);
+- `Model.numeric_jacobian` gets a `rel_step` that is not a finite
+  positive number (since 0.4.0; 0.3.0 failed with an
+  `UnboundLocalError`), and `coverage_exact` gets an `n` that is not
+  a whole number (since 0.4.0; 0.3.0 cut 29.9 to 29);
 - `propagate` gets no covariance (`None`, as from a plan that is
   not identifiable), one of the wrong size, one that is not
   symmetric or has a negative diagonal, one that is not positive
@@ -791,7 +991,7 @@ its inputs and conventions.
 
 ## How the results are checked
 
-69 automated tests run on every push and pull request, on Python 3.9,
+96 automated tests run on every push and pull request, on Python 3.9,
 3.10, 3.11, 3.12, 3.13 and 3.14, and once more on Python 3.9 with the
 oldest NumPy the package allows (1.22.0, with pytest 7.0.0). The
 numerical checks compare against a formula, an identity or seeded
@@ -985,6 +1185,54 @@ from an earlier run. What the tests assert:
   is read by column positions. Each refusal in the list above fires
   with the expected message.
 
+**Added in 0.4.0**
+
+- A decay of 10 on a background of 1000, with its time constant
+  `tau = 1e-9` written in seconds (samples from `t = 0`): the slopes
+  match the exact derivatives to 1e-5 of each column's largest value,
+  the planned error bars match the exact `(J^T W J)^-1` to relative
+  1e-5, and a fit from that guess equals the fit with exact slopes to
+  1e-4 of an error bar (0.3.0 refused all three; this test fails on
+  0.3.0). Where the fallback step already gave finite values the
+  slopes are unchanged bit for bit. A `rel_step` of 0, a negative,
+  NaN, infinite or non-numeric one, and a fractional `n` in
+  `coverage_exact` are refused.
+- `design` (greedy, and with `exchange=True`) returns the same
+  indices and the same information matrix, compared with `==`, as the
+  0.3.0 loops, kept in the test as the reference, on 21 problems (a
+  decay, a Gaussian peak with a sloped background and a plane in two
+  settings, with 2 to 8 picks from 9 to 60 candidates, including
+  exact ties from repeated candidates), also when the batches are cut
+  to 7 candidates.
+- `inverse_predict` on a straight line equals the NIST/SEMATECH
+  e-Handbook formula (section 2.3.6.7.3), typed into the test, for
+  the value (relative 1e-12) and the error bar (relative 1e-7), and
+  the covariance of three readings equals the closed form. On an
+  exponential decay with background it equals the closed-form inverse
+  `-tau ln((y - B) / A)` and the error bar from its partial
+  derivatives (relative 1e-6). For 20000 seeded replicate
+  calibrations (least squares done in the test with NumPy) followed
+  by a new reading, the scatter of the inverse values matches the
+  planned error bar within 3 %. On a saturating response the
+  first-order error bar matches seeded simulation within 2 % where it
+  is accepted; where it is refused (the slope changes by 65 % within
+  one error bar) the simulated scatter is more than 25 % larger. Each
+  refusal fires.
+- `runs_test`: for every n1 and n2 from 1 to 7 the tail probabilities,
+  the mean and the variance of the number of runs equal the counts
+  over all arrangements of the signs (relative 1e-12); for n1, n2 up
+  to 900 and 700 the tails equal exact integer arithmetic (relative
+  1e-9). On 4000 seeded sets of random signs and of residuals of
+  correct straight-line fits the false-alarm rate at the 5 % level is
+  at most 5 % plus 4.5 binomial standard errors; on curved readings
+  fitted with a line and errors stated 3 times too large, chi-squared
+  gives p = 0.994 while the runs test gives p = 0.001.
+- The two tutorials run and print exactly the output shown in their
+  docstrings and in this README; their results agree with the values
+  used to simulate the data within 3 error bars, and their printed
+  numbers agree with each other (error bar parts adding in
+  quadrature, the repeat count, the error bar of `1/tau`).
+
 Every refusal listed in "When it refuses, and why" is checked to
 fire, including a fit that does not converge within `max_iter` steps
 (a `RuntimeError`) and a parameter that no reading responds to (an
@@ -994,6 +1242,29 @@ dictionary can be hashed (used as a dictionary key or in a set), and
 equal models hash equally.
 
 ## Corrections in earlier versions
+
+**0.4.0 fixed one wrong refusal.**
+
+- *A small parameter whose effect is small next to the largest
+  reading could be refused as "non-finite".* For a parameter whose
+  relative step is too small to show next to the largest prediction,
+  the slopes fall back to the 0.1.0 step `1e-6 * max(|theta|, 1e-3)`,
+  which is 1e-9 for any parameter below 1e-3. For a time constant of
+  1e-9 s that step is the parameter itself: `tau - h = 0`. A decay of
+  10 on a background of 1000 (any amplitude below about 1/73 of the
+  background) with `tau = 1e-9` and samples from `t = 0` then divided
+  0 by 0, and `information`, `design` and `fit` stopped with "the
+  forward function returned non-finite predictions; check theta and
+  x", although the model is finite at that `tau`. 0.4.0 divides such
+  a step by 10 until the model is finite and then checks it as
+  before: the planned error bar on `tau` is 1.4189183e-10 s, equal to
+  the exact value from the analytic slopes to 6e-9 relative. Results
+  that 0.3.0 could compute are unchanged.
+
+Also in 0.4.0: `Model.numeric_jacobian(rel_step=0)` (or a negative
+step) failed with an `UnboundLocalError` and now explains the
+problem; `coverage_exact(29.9, 0.1)` returned the answer for n = 29
+and now refuses.
 
 **0.3.0 fixed two wrong answers.**
 
@@ -1123,9 +1394,25 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   possible. `exchange=True` improves it until no single swap helps,
   which in the tests reached the best subset every time, but that is
   still not a proof. Each swap pass tries every chosen setting
-  against every unused one, so with thousands of candidates it is
-  slow. It picks each candidate at most once; use `repeats_for` for
-  repeats.
+  against every unused one; since 0.4.0 these are scored in batches
+  (3000 candidates take a fraction of a second), but the work still
+  grows with the number of picks times the number of candidates for
+  every pass. It picks each candidate at most once; use `repeats_for`
+  for repeats.
+- `inverse_predict` needs settings that are one number per
+  measurement and a bracket in which the model reaches the reading
+  exactly once. It scans the bracket at `n_scan` points, so two
+  crossings closer together than the scan spacing are not seen. Its
+  error bar is first order, like `propagate`; it refuses when the
+  slope changes by more than 10 % within one error bar, and below that
+  the error bar can still be a few percent too small where the curve
+  bends (in the tests the simulated scatter was 1.014 times the error
+  bar at a slope change of 10.5 %).
+- `runs_test` looks only at the signs, so it needs enough residuals
+  to have power (with 10 residuals, 5 of each sign, the smallest
+  possible `p_value` is 2/252 = 0.008). For
+  residuals of a fit it is approximate (the residuals are not exactly
+  independent); in the tests that made it more cautious, not less.
 - The conformal guarantee is an average over calibration sets and new
   measurements, not a promise at each setting, and it needs the
   calibration data to be exchangeable with the new measurement:
@@ -1166,7 +1453,13 @@ Functions, chapter 8) by the series and continued fraction of W. H.
 Press, S. A. Teukolsky, W. T. Vetterling and B. P. Flannery,
 Numerical Recipes, 3rd ed., Cambridge University Press (2007),
 section 6.2; the Birge ratio is from R. T. Birge, Phys. Rev. 40, 207
-(1932). First-order propagation of uncertainty with
+(1932). The runs test is A. Wald and J. Wolfowitz, "On a test whether
+two samples are from the same population", Ann. Math. Statist. 11,
+147-162 (1940), doi:10.1214/aoms/1177731909. The straight-line case of
+`inverse_predict` is the propagation-of-error formula of the
+NIST/SEMATECH e-Handbook of Statistical Methods, section 2.3.6.7.3
+(https://itl.nist.gov/div898/handbook/mpc/section3/mpc3673.htm).
+First-order propagation of uncertainty with
 covariances is the "law of propagation of uncertainty" of JCGM
 100:2008, Evaluation of measurement data -- Guide to the expression
 of uncertainty in measurement (sections 5.1.2 and 5.2). Split
