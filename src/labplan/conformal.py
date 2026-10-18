@@ -26,18 +26,52 @@ last month's instrument state do not certify next month's drift.
 """
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 
 __all__ = ["conformal_quantile", "conformal_interval",
            "coverage_exact"]
 
 
+# floating-point slack when matching alpha to a short decimal: a value
+# computed as 1 - c is off by at most about one unit in the last place
+# of 1 (1 - 0.9 = 0.09999999999999998)
+_ULP_ONE = float(np.finfo(float).eps)
+
+
+def _decimal_alpha(a):
+    """The decimal number alpha stands for, as an exact Fraction, when
+    alpha is a decimal of at most 8 significant digits (0.1, 0.05,
+    0.0001, 0.1234) up to floating-point rounding (1 - 0.9 counts as
+    0.1); otherwise None (since 0.5.0)."""
+    tol = min(4.0 * _ULP_ONE, 1e-9 * a)
+    for digits in range(1, 9):
+        text = f"{a:.{digits}g}"
+        if abs(float(text) - a) <= tol:
+            return Fraction(text)
+    return None
+
+
 def _rank(n, a):
     """k = ceil((n + 1)(1 - a)), with alpha read as the number the
-    user typed. In binary floating point 1 - 0.7 is
-    0.30000000000000004, so a plain ceil turns an exact integer such
-    as 10 * 0.3 = 3 into 4. A product within 1e-9 (relative) above an
-    integer is therefore taken to be that integer."""
+    user typed.
+
+    When alpha is a decimal of at most 8 significant digits (up to
+    floating-point rounding, see `_decimal_alpha`), k is computed in
+    exact integer arithmetic from that decimal, at every n (since
+    0.5.0). Other values keep the rule of 0.2.0 to 0.4.0: in binary
+    floating point 1 - 0.7 is 0.30000000000000004, so a plain ceil
+    turns an exact integer such as 10 * 0.3 = 3 into 4, and a product
+    within 1e-9 (relative) above an integer is taken to be that
+    integer. Before 0.5.0 that rule was used for every alpha, and for
+    large n it also swallowed true fractions: for alpha = 0.0001 and
+    n = 109998 it gave k = 109988 instead of 109989, a coverage
+    below 1 - alpha."""
+    dec = _decimal_alpha(a)
+    if dec is not None:
+        num = (n + 1) * (dec.denominator - dec.numerator)
+        return -(-num // dec.denominator)
     t = (n + 1) * (1.0 - a)
     return int(np.ceil(t - 1e-9 * max(1.0, t)))
 
@@ -60,8 +94,9 @@ def conformal_quantile(scores, alpha: float = 0.1) -> float:
     Returns q such that |new error| <= q with probability >= 1-alpha.
     Refuses when n is too small for the level: the rank
     ceil((n+1)(1-alpha)) must exist among n scores, which needs
-    n >= (1-alpha)/alpha. alpha is read to about 9 significant
-    digits, so alpha=0.7 means 7/10 and n=9 gives k=3 (see `_rank`).
+    n >= (1-alpha)/alpha. A decimal alpha of up to 8 significant
+    digits is read exactly, so alpha=0.7 means 7/10 and n=9 gives k=3
+    (see `_rank`).
     """
     s = np.asarray(scores, dtype=float).ravel()
     if s.size < 1 or not np.all(np.isfinite(s)) or np.any(s < 0.0):

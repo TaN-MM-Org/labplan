@@ -26,7 +26,10 @@ named columns of an instrument's delimited text export. Since 0.4.0,
 `inverse_predict` reads a calibration curve backwards (the setting of
 a new reading, with its error bar from the reading and from the
 calibration), and `runs_test` checks whether the residuals come in
-long blocks of one sign, a misfit chi-squared cannot see. And every fit
+long blocks of one sign, a misfit chi-squared cannot see. Since 0.5.0,
+`fit_xy` fits when the settings have error bars too (errors in
+variables; for a straight line the method of York et al., Am. J.
+Phys. 72, 367 (2004)). And every fit
 can be turned into an audit record that states what was fitted, to
 exactly which data (sha256), by which software versions, when.
 
@@ -42,6 +45,7 @@ stored number.
 """
 from .model import Model
 from .fit import FitResult, fit, goodness_of_fit
+from .fitxy import fit_xy
 from .plan import design, information, repeats_for
 from .propagate import propagate
 from .inverse import inverse_predict
@@ -52,9 +56,9 @@ from .report import audit_record, report_text
 from .records import (load_columns, load_measurements_csv,
                       save_measurements_csv)
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
-    "Model", "FitResult", "fit", "goodness_of_fit",
+    "Model", "FitResult", "fit", "fit_xy", "goodness_of_fit",
     "information", "design", "repeats_for", "propagate",
     "inverse_predict", "runs_test",
     "conformal_quantile", "conformal_interval", "coverage_exact",

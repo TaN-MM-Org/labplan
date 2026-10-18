@@ -44,6 +44,8 @@ class FitResult:
         data this result answers for, recorded for the audit trail.
     model_name, reference, units : carried from the model (units
         since 0.2.0).
+    x_adjusted : for a fit by `fit_xy` (since 0.5.0), the fitted true
+        settings, an (n, d) array; None for `fit`.
     """
 
     values: dict
@@ -59,13 +61,18 @@ class FitResult:
     reference: str
     data_digest: str
     units: object = ""
+    x_adjusted: object = None
 
 
-def data_digest(x, y=None, sigmas=None) -> str:
+def data_digest(x, y=None, sigmas=None, x_sigmas=None) -> str:
     """sha256 over the byte content of the data arrays, so a report
-    can say exactly which data it answers for."""
+    can say exactly which data it answers for. `x_sigmas` (the errors
+    of the settings, for `fit_xy`; since 0.5.0) is included only when
+    given, so the digest of every other fit is unchanged."""
     h = hashlib.sha256()
-    for a in (x, y, sigmas):
+    arrays = (x, y, sigmas) if x_sigmas is None \
+        else (x, y, sigmas, x_sigmas)
+    for a in arrays:
         if a is None:
             h.update(b"\x00none\x00")
         else:

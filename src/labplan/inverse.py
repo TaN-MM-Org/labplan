@@ -103,27 +103,6 @@ def _root_sites(g):
     return sites
 
 
-def _bisect(func, lo, hi, g_lo):
-    """Bisection to the last representable digit; func(lo) has the
-    sign of g_lo and func(hi) the opposite sign."""
-    best_x, best_g = lo, abs(g_lo)
-    for _ in range(2200):
-        mid = 0.5 * (lo + hi)
-        if not lo < mid < hi:
-            break
-        gm = func(mid)
-        if abs(gm) < best_g:
-            best_x, best_g = mid, abs(gm)
-        if gm == 0.0:
-            return mid
-        if (gm > 0.0) == (g_lo > 0.0):
-            lo, g_lo = mid, gm
-        else:
-            hi = mid
-    g_hi = abs(func(hi))
-    return hi if g_hi < best_g else best_x
-
-
 def _dfdx(model, theta, x0):
     """df/dx at the setting x0, by the same checked central
     differences `Model.numeric_jacobian` uses for parameters."""
@@ -136,7 +115,8 @@ def _dfdx(model, theta, x0):
 def inverse_predict(model: Model, result: FitResult | None = None,
                     reading=None, bracket=None, reading_sigma=0.0, *,
                     theta=None, cov=None, n_scan: int = 1001,
-                    max_slope_change: float = 0.1) -> dict:
+                    max_slope_change: float = 0.1,
+                    full_cov: bool = True) -> dict:
     """The setting x0 at which the model predicts `reading`, with its
     error bar (calibration read backwards; new in 0.4.0).
 
@@ -167,6 +147,21 @@ def inverse_predict(model: Model, result: FitResult | None = None,
         response, the scatter of seeded simulations was 1.001, 1.014
         and 1.32 times the first-order error bar where the slope
         changed by 1 %, 10.5 % and 65 %.
+
+    full_cov : True (the default) returns the full covariance `cov` of
+        the x0 values of several readings; False returns cov=None and
+        computes only the error bars, so that memory and time grow
+        with the number of readings, not with its square (new in
+        0.5.0; use it to convert long series of readings).
+
+    Several readings are solved together (since 0.5.0): the model is
+    evaluated at the settings of all of them in one call, at each
+    step of the scan, the bisection and the slopes. For one reading
+    the steps are those of 0.4.0; for many, results agree with
+    solving them one at a time to within the rounding of the model
+    (the tests compare with the 0.4.0 loop). For 100 to 1000 readings
+    it was 54 to 63 times faster than 0.4.0 in the measurements of the
+    0.5.0 release notes.
 
     Also refuses a model that is flat at x0 (its slope there would
     change the prediction across the whole bracket by at most 1e-8 of
@@ -219,48 +214,17 @@ def inverse_predict(model: Model, result: FitResult | None = None,
     if not (math.isfinite(max_slope_change) and max_slope_change > 0.0):
         raise ValueError("max_slope_change must be finite and > 0")
 
+    if not isinstance(full_cov, bool):
+        raise ValueError("full_cov must be True or False")
+
     grid = np.linspace(lo, hi, int(n_scan))
     f_grid = model.predict(theta, grid[:, None])
+    x0 = _roots(model, theta, grid, f_grid, y, lo, hi)
 
-    def g_at(xv, yv):
-        return float(model.predict(theta, np.array([[xv]]))[0]) - yv
-
-    x0 = np.empty(y.size)
-    for i, yv in enumerate(y):
-        g = f_grid - yv
-        sites = _root_sites(g)
-        if not sites:
-            raise ValueError(
-                f"the model does not reach the reading {yv:.6g} for "
-                f"settings between {lo:.6g} and {hi:.6g} (there it runs "
-                f"from {f_grid.min():.6g} to {f_grid.max():.6g}); "
-                "widen the bracket, or check the reading")
-        if len(sites) > 1:
-            where = ", ".join(
-                f"near {grid[s[1]]:.6g}" for s in sites[:4])
-            raise ValueError(
-                f"the model reaches the reading {yv:.6g} at "
-                f"{len(sites)} settings in the bracket ({where}"
-                f"{', ...' if len(sites) > 4 else ''}): the reading "
-                "does not tell them apart. Narrow the bracket to the "
-                "branch you calibrated")
-        site = sites[0]
-        if site[0] == "zero":
-            if site[2] > site[1]:
-                raise ValueError(
-                    f"the model equals the reading {yv:.6g} on a whole "
-                    f"range of settings ({grid[site[1]]:.6g} to "
-                    f"{grid[site[2]]:.6g}): it is flat there and the "
-                    "reading cannot tell the settings apart")
-            x0[i] = grid[site[1]]
-        else:
-            k = site[1]
-            x0[i] = _bisect(lambda xv: g_at(xv, yv), grid[k],
-                            grid[k + 1], g[k])
-
-    slope = np.array([_dfdx(model, theta, xv) for xv in x0])
+    slope = _dfdx_many(model, theta, x0)
     # flat: across the whole bracket this slope would change the
-    # prediction by at most 1e-8 of the model's size there (rounding)
+    # prediction by at most 1e-8 of the model's size there (the
+    # resolution of the numerical slopes)
     flat = np.abs(slope) * (hi - lo) \
         <= 1e-8 * float(np.max(np.abs(f_grid)))
     if np.any(flat):
@@ -269,33 +233,35 @@ def inverse_predict(model: Model, result: FitResult | None = None,
                          f"x0 = {bad:.6g} (zero slope): the reading "
                          "does not determine the setting there")
     a = model.jacobian(theta, x0[:, None])
-    par_cov = a @ cov @ a.T
-    par_cov = 0.5 * (par_cov + par_cov.T)
-    out_cov = (par_cov + np.diag(u * u)) / np.outer(slope, slope)
-    sigma = np.sqrt(np.maximum(np.diag(out_cov), 0.0))
+    if full_cov:
+        par_cov = a @ cov @ a.T
+        par_cov = 0.5 * (par_cov + par_cov.T)
+        out_cov = (par_cov + np.diag(u * u)) / np.outer(slope, slope)
+        sigma = np.sqrt(np.maximum(np.diag(out_cov), 0.0))
+        par_var = np.diag(par_cov)
+    else:
+        # only the diagonal: memory and time grow like the number of
+        # readings, not its square (since 0.5.0)
+        par_var = np.einsum("ij,jk,ik->i", a, cov, a)
+        out_cov = None
+        sigma = np.sqrt(np.maximum((par_var + u * u) / (slope * slope),
+                                   0.0))
     from_reading = u / np.abs(slope)
-    from_params = np.sqrt(np.maximum(np.diag(par_cov), 0.0)) \
-        / np.abs(slope)
+    from_params = np.sqrt(np.maximum(par_var, 0.0)) / np.abs(slope)
 
-    change = np.zeros(y.size)
-    for i, (xv, sv) in enumerate(zip(x0, sigma)):
-        if sv == 0.0:
-            continue
-        for xe in (min(xv + sv, hi), max(xv - sv, lo)):
-            if xe != xv:
-                change[i] = max(change[i],
-                                abs(_dfdx(model, theta, xe) / slope[i]
-                                    - 1.0))
-        if change[i] > max_slope_change:
-            raise ValueError(
-                f"the slope of the model changes by "
-                f"{100 * change[i]:.3g} % within one error bar of "
-                f"x0 = {xv:.6g} (+/- {sv:.3g}): the first-order error "
-                "bar is not reliable there (the curve bends, or "
-                "flattens, within the uncertainty). Reduce the "
-                "uncertainty (repeat the reading, calibrate with more "
-                "points) or work where the curve is steeper; "
-                "max_slope_change sets this limit")
+    change = _slope_changes(model, theta, x0, sigma, slope, lo, hi)
+    over = change > max_slope_change
+    if np.any(over):
+        i = int(np.argmax(over))
+        raise ValueError(
+            f"the slope of the model changes by "
+            f"{100 * change[i]:.3g} % within one error bar of "
+            f"x0 = {x0[i]:.6g} (+/- {sigma[i]:.3g}): the first-order "
+            "error bar is not reliable there (the curve bends, or "
+            "flattens, within the uncertainty). Reduce the "
+            "uncertainty (repeat the reading, calibrate with more "
+            "points) or work where the curve is steeper; "
+            "max_slope_change sets this limit")
 
     if scalar:
         return {"value": float(x0[0]), "sigma": float(sigma[0]),
@@ -307,3 +273,152 @@ def inverse_predict(model: Model, result: FitResult | None = None,
             "slope": slope, "sigma_from_reading": from_reading,
             "sigma_from_parameters": from_params,
             "slope_change": change}
+
+
+# grid values per block when all readings are scanned at once
+_SCAN_BLOCK = 2 ** 21
+
+
+def _site_error(g, grid, f_grid, yv, lo, hi):
+    """The refusal of 0.4.0 for a reading whose scan row g does not
+    have exactly one isolated root site; None when it has one."""
+    sites = _root_sites(g)
+    if not sites:
+        return (f"the model does not reach the reading {yv:.6g} for "
+                f"settings between {lo:.6g} and {hi:.6g} (there it runs "
+                f"from {f_grid.min():.6g} to {f_grid.max():.6g}); "
+                "widen the bracket, or check the reading")
+    if len(sites) > 1:
+        where = ", ".join(f"near {grid[s[1]]:.6g}" for s in sites[:4])
+        return (f"the model reaches the reading {yv:.6g} at "
+                f"{len(sites)} settings in the bracket ({where}"
+                f"{', ...' if len(sites) > 4 else ''}): the reading "
+                "does not tell them apart. Narrow the bracket to the "
+                "branch you calibrated")
+    site = sites[0]
+    if site[0] == "zero" and site[2] > site[1]:
+        return (f"the model equals the reading {yv:.6g} on a whole "
+                f"range of settings ({grid[site[1]]:.6g} to "
+                f"{grid[site[2]]:.6g}): it is flat there and the "
+                "reading cannot tell the settings apart")
+    return None
+
+
+def _roots(model, theta, grid, f_grid, y, lo, hi):
+    """x0 for every reading: the scan for sign changes and the
+    bisection of 0.4.0, done for all readings at once (since 0.5.0).
+
+    The scan compares the same numbers f_grid - y as before, so the
+    sites found are the same; readings without exactly one isolated
+    site get the 0.4.0 refusal, in reading order. The bisection makes
+    the same steps for every reading, but evaluates the model at the
+    midpoints of all readings in one call, so a midpoint at which the
+    model is within rounding of the reading can be judged on the other
+    side; the root then moves by about the rounding of the model
+    divided by its slope (the tests compare with the 0.4.0 loop)."""
+    m, n = y.size, grid.size
+    x0 = np.empty(m)
+    cross_k = np.full(m, -1)
+    step = max(1, _SCAN_BLOCK // n)
+    for start in range(0, m, step):
+        block = slice(start, min(m, start + step))
+        g = f_grid[None, :] - y[block, None]
+        zero = g == 0.0
+        nonzero = ~zero
+        pos = g > 0.0
+        cross = nonzero[:, :-1] & nonzero[:, 1:] & (pos[:, :-1] != pos[:, 1:])
+        run_start = zero.copy()
+        run_start[:, 1:] &= nonzero[:, :-1]
+        n_sites = cross.sum(axis=1) + run_start.sum(axis=1)
+        n_zero = zero.sum(axis=1)
+        good_cross = (n_sites == 1) & (n_zero == 0)
+        good_zero = (n_sites == 1) & (n_zero == 1)
+        for r in np.flatnonzero(~(good_cross | good_zero)):
+            msg = _site_error(g[r], grid, f_grid, float(y[start + r]),
+                              lo, hi)
+            if msg is not None:
+                raise ValueError(msg)
+        rows = np.arange(block.start, block.stop)
+        k = np.argmax(cross, axis=1)
+        cross_k[rows[good_cross]] = k[good_cross]
+        x0[rows[good_zero]] = grid[np.argmax(zero, axis=1)[good_zero]]
+    sel = np.flatnonzero(cross_k >= 0)
+    if sel.size:
+        k = cross_k[sel]
+        x0[sel] = _bisect_many(model, theta, grid[k], grid[k + 1],
+                               f_grid[k] - y[sel], y[sel])
+    return x0
+
+
+def _bisect_many(model, theta, lo, hi, g_lo, y):
+    """The bisection of 0.4.0 (to the last representable digit, keeping
+    the point where the model came closest to the reading) for many
+    brackets at once: the same midpoints and the same rules, with one
+    model call per step for all brackets."""
+    lo, hi, g_lo = lo.copy(), hi.copy(), g_lo.copy()
+    best_x, best_g = lo.copy(), np.abs(g_lo)
+    out = np.empty(lo.size)
+    exact = np.zeros(lo.size, dtype=bool)
+    active = np.arange(lo.size)
+    for _ in range(2200):
+        mid = 0.5 * (lo[active] + hi[active])
+        inside = (lo[active] < mid) & (mid < hi[active])
+        active, mid = active[inside], mid[inside]
+        if active.size == 0:
+            break
+        gm = model.predict(theta, mid[:, None]) - y[active]
+        closer = np.abs(gm) < best_g[active]
+        best_x[active[closer]] = mid[closer]
+        best_g[active[closer]] = np.abs(gm[closer])
+        hit = gm == 0.0
+        out[active[hit]] = mid[hit]
+        exact[active[hit]] = True
+        same = (gm > 0.0) == (g_lo[active] > 0.0)
+        up = ~hit & same
+        lo[active[up]] = mid[up]
+        g_lo[active[up]] = gm[up]
+        down = ~hit & ~same
+        hi[active[down]] = mid[down]
+        active = active[~hit]
+    rest = np.flatnonzero(~exact)
+    if rest.size:
+        g_hi = np.abs(model.predict(theta, hi[rest, None]) - y[rest])
+        out[rest] = np.where(g_hi < best_g[rest], hi[rest], best_x[rest])
+    return out
+
+
+def _dfdx_many(model, theta, xs):
+    """`_dfdx` at many settings: the relative step of
+    `Model.numeric_jacobian` for all of them in two model calls, and
+    the one-at-a-time routine (with its checked fallback step) only
+    where that step does not resolve the change (since 0.5.0)."""
+    xs = np.asarray(xs, dtype=float)
+    out = np.empty(xs.size)
+    h = 1e-6 * np.abs(xs)
+    fast = np.flatnonzero(h > 0.0)
+    done = np.zeros(xs.size, dtype=bool)
+    if fast.size:
+        xf, hf = xs[fast], h[fast]
+        fp = model.predict(theta, (xf + hf)[:, None])
+        fm = model.predict(theta, (xf - hf)[:, None])
+        size = np.maximum(np.abs(fp), np.abs(fm))
+        ok = (np.abs(fp - fm) > 1e-8 * size) \
+            | (1e-6 * np.maximum(np.abs(xf), 1e-3) == hf)
+        out[fast[ok]] = ((fp - fm) / (2.0 * hf))[ok]
+        done[fast[ok]] = True
+    for i in np.flatnonzero(~done):
+        out[i] = _dfdx(model, theta, float(xs[i]))
+    return out
+
+
+def _slope_changes(model, theta, x0, sigma, slope, lo, hi):
+    """The largest relative change of df/dx between x0 and
+    x0 +/- sigma (kept inside the bracket), for every reading."""
+    change = np.zeros(x0.size)
+    for xe in (np.minimum(x0 + sigma, hi), np.maximum(x0 - sigma, lo)):
+        use = np.flatnonzero((sigma != 0.0) & (xe != x0))
+        if use.size:
+            rel = np.abs(_dfdx_many(model, theta, xe[use]) / slope[use]
+                         - 1.0)
+            change[use] = np.maximum(change[use], rel)
+    return change

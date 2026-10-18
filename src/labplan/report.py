@@ -44,6 +44,9 @@ def audit_record(result: FitResult, operator: str = "",
     operator : who ran the calibration (free text, e.g. a name or an
         instrument id); recorded verbatim.
     note : anything else worth remembering, recorded verbatim.
+
+    A result of `fit_xy` (since 0.5.0) also gets the key `fit_method`;
+    records of `fit` have the same keys as before.
     """
     from . import __version__
     if not isinstance(operator, str) or not isinstance(note, str):
@@ -71,6 +74,10 @@ def audit_record(result: FitResult, operator: str = "",
         "operator": operator,
         "note": note,
     }
+    if getattr(result, "x_adjusted", None) is not None:
+        # since 0.5.0; the key is absent for `fit`, as in earlier records
+        rec["fit_method"] = ("fit_xy: errors in the settings and in the "
+                             "readings")
     # the record must survive serialization exactly
     json.dumps(rec)
     return rec
@@ -92,6 +99,8 @@ def report_text(record: dict) -> str:
             f"{k}: {v}" for k, v in units.items()))
     elif units:
         lines.append(f"  units:      {units}")
+    if record.get("fit_method"):
+        lines.append(f"  method:     {record['fit_method']}")
     lines.append(f"  when (UTC): {record['timestamp_utc']}")
     if record.get("operator"):
         lines.append(f"  operator:   {record['operator']}")
