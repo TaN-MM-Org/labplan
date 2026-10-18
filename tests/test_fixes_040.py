@@ -13,8 +13,9 @@ faster `design`.
 - `Model.numeric_jacobian(rel_step=0)` raised UnboundLocalError and
   `coverage_exact(29.9, 0.1)` answered for n = 29; both now refuse.
 - `design` computes the candidate determinants in batches. Its picks
-  and its information matrix are compared, bit for bit, with the
-  0.3.0 loops kept below as the reference.
+  and its information matrix are compared with the 0.3.0 loops kept
+  below as the reference (with ==, until 0.5.0; with the stated
+  tolerances of `_assert_same_design` since then).
 """
 import math
 
@@ -211,14 +212,34 @@ def _problems():
     return out
 
 
+def _assert_same_design(new_idx, new_fisher, idx, fisher):
+    """The batched design against the 0.3.0 loops (since 0.5.0 with
+    stated tolerances instead of ==, because batched and one-at-a-time
+    LAPACK calls may differ in the last digits on other CPUs). The
+    information matrix is a sum of the same rows, so its entries agree
+    to rounding: 1e-12 of the largest entry (the sum of at most 8
+    rows has a rounding error near 1e-15 of it). The picks must be the
+    same, unless rounding flipped a tie: then both sets must have the
+    same log-determinant to 1e-9 (relative)."""
+    if new_idx != idx:
+        def logdet(f):
+            sign, val = np.linalg.slogdet(f)
+            assert sign > 0
+            return val
+        a, b = logdet(new_fisher), logdet(fisher)
+        assert abs(a - b) <= 1e-9 * max(1.0, abs(b))
+        return
+    scale = np.max(np.abs(fisher))
+    assert np.max(np.abs(new_fisher - fisher)) <= 1e-12 * scale
+
+
 @pytest.mark.parametrize("exchange", [False, True])
 def test_batched_design_equals_the_030_loops(exchange):
     for model, th, cand, k, sig in _problems():
         x = cand[:, None] if np.ndim(cand) == 1 else cand
         new = design(model, th, x, k, sigmas=sig, exchange=exchange)
         idx, fisher = _old_design(model, th, x, k, sig, exchange)
-        assert new["indices"] == idx
-        assert np.array_equal(new["fisher"], fisher)
+        _assert_same_design(new["indices"], new["fisher"], idx, fisher)
 
 
 def test_batched_design_in_small_batches(monkeypatch):
@@ -229,6 +250,6 @@ def test_batched_design_in_small_batches(monkeypatch):
     whole = design(model, th, cand, k, sigmas=sig, exchange=True)
     monkeypatch.setattr(plan, "_BATCH_BYTES", 8 * 25 * 7)
     parts = design(model, th, cand, k, sigmas=sig, exchange=True)
-    assert parts["indices"] == whole["indices"]
-    assert np.array_equal(parts["fisher"], whole["fisher"])
+    _assert_same_design(parts["indices"], parts["fisher"],
+                        whole["indices"], whole["fisher"])
     assert math.isfinite(parts["condition_number"])

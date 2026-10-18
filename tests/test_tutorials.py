@@ -75,3 +75,38 @@ def test_tutorial_decay_on_background():
                         out)
     assert rate == pytest.approx(1 / tau, rel=1e-3)
     assert s_rate == pytest.approx(s_tau / tau ** 2, rel=0.02)
+
+
+def test_tutorial_errors_in_both():
+    out, documented = _run("tutorial_errors_in_both.py")
+    assert out.rstrip("\n") == documented
+    readme = (ROOT / "README.md").read_text()
+    assert documented in readme
+    c1_n, s_n, chi_n, dof_n, _ = _num(
+        r"x exact: +c1 = ([0-9.]+) \+/- ([0-9.]+) mV/K, chi2 = ([0-9.]+) "
+        r"for ([0-9]+) dof, p = ([0-9.]+)", out)
+    c1, s_c1, chi, dof, p = _num(
+        r"x and y: +c1 = ([0-9.]+) \+/- ([0-9.]+) mV/K, chi2 = ([0-9.]+) "
+        r"for ([0-9]+) dof, p = ([0-9.]+)", out)
+    assert dof == dof_n == 15 - 2 and p > 0.01
+    # simulated with c1 = 4 mV/K
+    assert abs(c1 - 4.0) < 3 * s_c1
+    # For a straight line with the same errors everywhere, fit_xy
+    # weighs each residual with 1 / (u_V^2 + c1^2 u_T^2); fit with
+    # 1 / u_V^2. So the error bars differ by the factor
+    # sqrt(1 + (c1 u_T / u_V)^2) (here 1.414; printed to 2 digits),
+    # and fit's chi2, at its own minimum, is at most fit_xy's chi2
+    # times that factor squared (printed to 0.1).
+    k2 = 1 + (c1 * 0.05 / 0.2) ** 2
+    lo = (s_c1 - 0.00005) / (s_n + 0.00005)
+    hi = (s_c1 + 0.00005) / (s_n - 0.00005)
+    assert lo <= math.sqrt(k2) <= hi
+    assert chi_n <= k2 * (chi + 0.05) + 0.05
+    t, s_t = _num(r"temperature = ([0-9.]+) \+/- ([0-9.]+) degC", out)
+    (s_read,) = _num(r"from the reading noise: +([0-9.]+)", out)
+    (s_cal,) = _num(r"from the calibration: +([0-9.]+)", out)
+    # the unknown was simulated at 50 degC
+    assert abs(t - 50.0) < 3 * s_t
+    assert abs(math.hypot(s_read, s_cal) - s_t) < 2e-3
+    # reading part: 0.2 mV / sqrt(5) divided by the slope c1
+    assert abs(s_read - 0.2 / math.sqrt(5) / c1) < 1e-3
