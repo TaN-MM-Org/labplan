@@ -5,6 +5,127 @@ against a closed form, an exact identity, or seeded simulation
 against an exact formula; the release notes on GitHub carry the full
 anchor lists.
 
+## 0.5.0 (2026-10-18)
+
+### Added
+
+- `fit_xy(model, x, y, theta0, sigmas, x_sigmas, max_iter=200,
+  tol=1e-12)`: the fit when the settings have error bars too (errors
+  in variables), for any `Model` whose prediction for a measurement
+  depends only on its own settings. It minimizes the sum of squared
+  reading residuals and squared setting adjustments, each in units of
+  its error bar, over the parameters and the true settings
+  (Levenberg-Marquardt on the joint problem, with the settings
+  eliminated by a Schur complement at each step). `x_sigmas` is one
+  number, one per measurement, or an `(n, d)` array; 0 marks an exact
+  setting. Returns a `FitResult` with the first-order covariance (with
+  the settings eliminated, the inverse of
+  `sum a_i a_i^T / (sigma_y,i^2 + sum_k s_ik^2 sigma_x,ik^2)`), chi2 for
+  `n - p` degrees of freedom, and the fitted true settings in the new
+  field `FitResult.x_adjusted`. For a straight line it is the line of
+  D. York et al., "Unified equations for the slope, intercept, and
+  standard errors of the best straight line", Am. J. Phys. 72,
+  367-375 (2004), doi:10.1119/1.1632486. On Pearson's data with
+  York's weights (C. A. Cantrell, Atmos. Chem. Phys. 8, 5477-5487
+  (2008), Table 1) it gives intercept 5.47991 +/- 0.29497 and slope
+  -0.48053 +/- 0.05799, chi2 = 11.87 for 8 degrees of freedom. The
+  slope and intercept are the values of the "Williamson-York" row of
+  Cantrell's Table 2; the error bars and chi2 agree with York's
+  equations and with the output of the R package bfsl. Refuses a fit
+  without `sigmas`, `x_sigmas` of the wrong shape or negative, and a
+  model whose prediction for one measurement depends on the settings
+  of another.
+- `inverse_predict(..., full_cov=False)`: only the error bars, no
+  covariance between readings, so memory grows with the number of
+  readings and not with its square (10000 readings took 0.49 s).
+- `audit_record` of a `fit_xy` result has the key `fit_method` and
+  `report_text` prints it; the data digest then also covers
+  `x_sigmas`. Records of `fit` are unchanged.
+- Tutorial `examples/tutorial_errors_in_both.py` and README example 15
+  (see Tutorials below).
+
+### Fixed
+
+- The conformal rank `k = ceil((n + 1)(1 - alpha))` (used by
+  `conformal_quantile` and `coverage_exact`) was one too small for
+  some alphas at large `n`. Any product within 1e-9 (relative) above
+  an integer was taken to be that integer, and for large `n` that
+  swallows a true fraction. Before: alpha = 0.0001, n = 109998:
+  `k` = 109988, `coverage_exact` = 0.99989999909, below the promised
+  1 - alpha = 0.9999 (alpha = 0.001: first at n = 1001998, coverage
+  0.998999999). After: `k` = 109989 and coverage 0.99990909, from
+  exact integer arithmetic. A decimal alpha of up to 8 significant
+  digits, also one computed as `1 - 0.9`, is now read exactly; other
+  alphas (1/3, 0.099999999999) keep the earlier rule. For every alpha
+  and `n` of the earlier tests the rank is unchanged (test
+  `test_conformal_rank_exact_at_large_n`, which fails on 0.4.0, and
+  `test_conformal_rank_unchanged_where_it_was_right`).
+- The test suite failed when run from the source distribution
+  (sdist), which left out `CITATION.cff` and `examples/`. Before
+  (a clean copy of the 0.5.0 sources without `MANIFEST.in`, tests run
+  from the unpacked sdist): 1 failed (`test_version_metadata`,
+  `FileNotFoundError` for `CITATION.cff`), 107 passed, 3 tutorial
+  tests skipped. After: a new `MANIFEST.in` adds `CHANGELOG.md`,
+  `CITATION.cff`, `CONTRIBUTING.md` and `examples/*.py` to the
+  sdist, and all 111 tests pass there. The wheel is unchanged.
+
+### Changed
+
+- The test that compares the batched `design` with the 0.3.0 loops
+  compares the information matrices to 1e-12 of their largest entry
+  instead of with `==`, and would accept different picks only for a
+  tie within 1e-9 in the log-determinant: batched and single LAPACK
+  calls are not guaranteed to round alike on every processor. The
+  README no longer says "bit for bit" for the batched `design`.
+- Version 0.5.0 in `pyproject.toml`, `labplan.__version__` and
+  `CITATION.cff` (released 2026-10-18). README: the new function,
+  option, refusals, tests, correction, limits and sources; a word
+  guide entry for errors in both coordinates; the printed output of
+  README examples 1 to 14 and of the scripts in `examples/` is
+  unchanged (apart from the version and the timestamp in the record
+  that example 01 prints).
+
+### Performance
+
+- `inverse_predict` solves all readings together: the scan, the
+  bisection, the slopes and the slope-change check evaluate the model
+  for all readings in one call per step (one reading takes the same
+  steps as before). Measured speedup, median of 7 interleaved runs (5
+  for 1000 readings) of 0.4.0 and 0.5.0 on a shared 2-CPU machine:
+  quadratic calibration, 10 / 100 / 1000 readings: 8.3x / 62.0x /
+  53.7x (1000 readings: 6.59 s before, 0.123 s after); exponential
+  decay: 8.3x / 55.5x / 63.3x; one reading: 1.1x to 1.2x. Equality
+  with the 0.4.0 loop, kept in the tests as the reference, is checked
+  with tolerances derived from the rounding of the model (test
+  `test_inverse_many_readings_equal_the_040_loop`), and every refusal
+  gives the 0.4.0 message (`test_inverse_refusals_keep_the_040_messages`).
+
+### Tutorials
+
+- `examples/tutorial_errors_in_both.py`: calibrates an illustrative
+  temperature sensor against a reference thermometer whose readings
+  have error bars of 0.05 K: `fit` (reference taken as exact) gives
+  error bars too small by about 1.4, `fit_xy` counts both errors, and
+  an unknown is read off the calibration with `inverse_predict`.
+  Runs in about 0.2 s.
+
+### Tests
+
+- 15 new tests (111 in total; the new ones take about 8 s, most of it
+  300 seeded `fit_xy` fits): `tests/test_fitxy.py` (the Pearson-York
+  benchmark against Cantrell's tables, York's iteration written out in
+  the test and the values printed by the R package bfsl; the
+  closed-form chi2 and adjusted settings of a straight line;
+  stationarity and the effective-variance covariance of a nonlinear
+  fit from exact derivatives; seeded simulation; exact settings,
+  exact columns, units, downstream use and every refusal),
+  `tests/test_fixes_050.py` (the conformal rank against exact
+  rational arithmetic and against the 0.4.0 rule; `inverse_predict`
+  against the 0.4.0 loop, its messages and `full_cov=False`) and one
+  more tutorial test.
+- The suite was also run with Python 3.9, NumPy 1.22.0 and pytest
+  7.0.0 (the CI oldest-dependencies job): 111 passed.
+
 ## 0.4.0 (2026-10-17)
 
 ### Added

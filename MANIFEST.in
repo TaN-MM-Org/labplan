@@ -1,0 +1,4 @@
+# Files the tests read, so that the test suite also runs from the
+# source distribution (since 0.5.0).
+include CHANGELOG.md CITATION.cff CONTRIBUTING.md
+recursive-include examples *.py

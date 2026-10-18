@@ -19,8 +19,10 @@ questions:
   errors? Do the residuals wander in a pattern the model misses? What
   is the error bar of anything computed from them, such as a predicted
   reading? And, reading the calibration backwards, which setting
-  produced a new reading, and how sure is that? The readings can come
-  straight from an instrument's exported text table.
+  produced a new reading, and how sure is that? What if the settings
+  themselves have error bars, as when a sensor is calibrated against
+  a reference instrument? The readings can come straight from an
+  instrument's exported text table.
 - **If the model may be wrong:** how wide a band around the
   prediction still covers new measurements at a chosen rate?
 - **Later:** can anyone trace what was fitted, to exactly which data,
@@ -101,6 +103,10 @@ explains why.
   new reading `y0` is turned into the setting `x0` at which the model
   predicts `y0`; its error bar counts both the error of the new
   reading and the uncertainty of the calibration.
+- **Errors in both coordinates** ("errors in variables"): the
+  settings are not known exactly either, for example because they
+  are the readings of a reference instrument. The fit then also
+  estimates the true settings, each within its own error bar.
 - **Conformal prediction** -- a way to put a band around predictions
   from held-out data alone, without trusting the model. The
   **calibration scores** are the absolute errors
@@ -132,13 +138,13 @@ an error bar of 5 Hz on the corner frequency), and
 `02_conformal_certificate.py` wraps a conformal band around a
 deliberately wrong straight-line model and measures its coverage
 over 300 simulated rounds (0.899, against the exact 0.9000 for its
-79 calibration points). Two longer tutorials, also in `examples/`,
+79 calibration points). Three longer tutorials, also in `examples/`,
 are described in [Tutorials](#tutorials) below.
 
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with labplan 0.4.0. The model, the numbers and the noise are
+printed with labplan 0.5.0. The model, the numbers and the noise are
 illustrative; the random numbers come from fixed seeds, so the
 output is repeatable.
 
@@ -698,9 +704,57 @@ in 0.7 % and 2.8 % of them (3.6 % for 30 independent random signs,
 where the exact test, whose runs come in whole numbers, stays at or
 below 5 %).
 
+### 15. Settings with error bars too: fit both coordinates
+
+```python
+import numpy as np
+from labplan import Model, fit, fit_xy, goodness_of_fit
+
+# Pearson's data with York's weights (1 / error bar squared), as
+# tabulated by C. A. Cantrell, Atmos. Chem. Phys. 8, 5477 (2008).
+x = np.array([0.0, 0.9, 1.8, 2.6, 3.3, 4.4, 5.2, 6.1, 6.5, 7.4])
+y = np.array([5.9, 5.4, 4.4, 4.6, 3.5, 3.7, 2.8, 2.8, 2.4, 1.5])
+wx = np.array([1000, 1000, 500, 800, 200, 80, 60, 20, 1.8, 1.0])
+wy = np.array([1, 1.8, 4, 8, 20, 20, 70, 70, 100, 500.0])
+
+line = Model("line", lambda th, x: th[0] + th[1] * x[:, 0],
+             param_names=("intercept", "slope"),
+             reference="straight line; Pearson-York test data")
+res = fit_xy(line, x, y, theta0=[5.0, -0.5], sigmas=1 / np.sqrt(wy),
+             x_sigmas=1 / np.sqrt(wx))
+for name in line.param_names:
+    print(f"{name} = {res.values[name]:.5f} +/- {res.sigma[name]:.5f}")
+g = goodness_of_fit(res)
+print(f"chi2 = {g['chi2']:.2f} for {g['dof']} degrees of freedom, "
+      f"p = {g['p_value']:.3f}")
+
+# The same data with x taken as exact:
+naive = fit(line, x, y, theta0=[5.0, -0.5], sigmas=1 / np.sqrt(wy))
+print(f"x taken as exact: slope = {naive.values['slope']:.5f}")
+```
+
+```
+intercept = 5.47991 +/- 0.29497
+slope = -0.48053 +/- 0.05799
+chi2 = 11.87 for 8 degrees of freedom, p = 0.157
+x taken as exact: slope = -0.61081
+```
+
+`fit_xy` (new in 0.5.0) fits the model and, at the same time, the true
+settings, each allowed to move within its error bar `x_sigmas`. This is
+a classic test case: the slope and intercept are the values Cantrell's
+review lists in its "Williamson-York" row (-0.48053 and
+5.4799), and the error bars and chi2 are those of York's formulas
+(the tests repeat York's iteration step by step). Taking `x` as exact
+gives a slope of -0.61081 (also in Cantrell's table), far outside the
+error bar. The result goes into `goodness_of_fit`, `propagate`,
+`inverse_predict` and `audit_record` like any fit; `res.x_adjusted`
+holds the fitted true settings. A setting whose error bar is 0 is
+taken as exact.
+
 ## Tutorials
 
-Two complete scripts in [`examples/`](examples/) go from raw data
+Three complete scripts in [`examples/`](examples/) go from raw data
 (simulated with a fixed seed, so the output is repeatable) to a final
 result with error bars. Each runs in well under a second, and a test
 checks that it still prints exactly what is shown here.
@@ -743,6 +797,31 @@ chi2 = 150.0 for 197 degrees of freedom, p = 0.995
 runs of residual signs: 105 (expected 101.0), p = 0.740
 decay rate 1/tau = 1.006e+09 +/- 9.9e+06 1/s
 ```
+
+[`tutorial_errors_in_both.py`](examples/tutorial_errors_in_both.py)
+(new in 0.5.0) calibrates an illustrative temperature sensor
+(`V = c0 + c1 T`, about 4 mV/K) against a reference thermometer whose
+15 readings have error bars of 0.05 K, as large in effect as the
+sensor's own 0.2 mV. Fitted as if the reference were exact, the error
+bars are too small by a factor of about 1.4 and chi2 is too large
+(on average twice its degrees of freedom); `fit_xy` counts both
+errors. The script then reads an unknown (5 readings, true
+temperature 50 degC) off the calibration:
+
+```
+reference points: 15, from 10.0 to 80.0 degC
+x exact:   c1 = 4.0003 +/- 0.0024 mV/K, chi2 = 20.8 for 13 dof, p = 0.076
+x and y:   c1 = 4.0004 +/- 0.0034 mV/K, chi2 = 10.4 for 13 dof, p = 0.66
+reference temperatures moved by 0.59 error bars (rms), at most 1.25
+unknown: mean reading 212.051 mV +/- 0.089 mV (5 readings)
+temperature = 50.013 +/- 0.029 degC
+  from the reading noise:   0.022 degC
+  from the calibration:     0.019 degC
+```
+
+In this run the first chi2 (p = 0.076) would not by itself have raised
+an alarm; the error bars would still have been too small. Knowing the
+reference's error bar, and fitting with it, is what fixes them.
 
 ## What is in the package
 
@@ -799,9 +878,13 @@ decay rate 1/tau = 1.006e+09 +/- 9.9e+06 1/s
   information matrix, `identifiable`, the condition number, the error
   bars and the covariance; the result can be passed to
   `repeats_for`. Since 0.4.0 the candidates are scored in batches,
-  which gives the same picks, bit for bit, 9 to 24 times faster for
-  400 to 3000 candidates (medians of 7 runs on a shared 2-CPU
-  machine).
+  9 to 24 times faster for 400 to 3000 candidates (medians of 7 runs
+  on a shared 2-CPU machine). The batches use the same arithmetic and
+  the same LAPACK routine as one candidate at a time; the tests find
+  the same picks as the 0.3.0 loops, and since 0.5.0 they compare the
+  information matrices to 1e-12 of their largest entry rather than
+  digit for digit, because batched and single LAPACK calls are not
+  guaranteed to round alike on every processor.
 - `repeats_for(target_sigma, plan)` -- the number of repeats `r` of a
   planned design needed to bring every error bar down to a target,
   from the rule that `r` repeats divide the error bars by `sqrt(r)`.
@@ -841,9 +924,27 @@ decay rate 1/tau = 1.006e+09 +/- 9.9e+06 1/s
 - `FitResult` -- what `fit` returns: `values` and `sigma`
   (dictionaries by parameter name), `theta` and `cov` (arrays),
   `chi2`, `chi2_dof`, `n_points`, `condition_number`, `n_iter`,
-  `model_name`, `reference`, `units` (the model's note) and
+  `model_name`, `reference`, `units` (the model's note),
   `data_digest` (the sha256 of the settings, readings and reading
-  errors).
+  errors) and, since 0.5.0, `x_adjusted` (the fitted true settings
+  of `fit_xy`; `None` for `fit`).
+- `fit_xy(model, x, y, theta0, sigmas, x_sigmas, max_iter=200,
+  tol=1e-12)` (new in 0.5.0): the fit when the settings have error
+  bars too. `x_sigmas` is one number, one per measurement, or an
+  `(n, d)` array; 0 marks an exact setting. It minimizes the sum of
+  the squared reading residuals and the squared setting adjustments,
+  each in units of its error bar, over the parameters and the true
+  settings (the maximum-likelihood fit for independent Gaussian
+  errors). For a straight line this is the line of D. York et al.,
+  Am. J. Phys. 72, 367 (2004). The covariance is first order, as for
+  `fit`; with the true settings eliminated it is the inverse of
+  `sum a_i a_i^T / (sigma_y,i^2 + sum_k s_ik^2 sigma_x,ik^2)`, with
+  `a_i` the slopes with respect to the parameters and `s_ik` those with
+  respect to the settings ("effective variance"). chi2 is the minimum
+  sum, for `n - p` degrees of freedom. The slopes with respect to the
+  settings are central differences with a step of 1e-6 of the larger
+  of the setting and the largest setting in its column. See example
+  15 and the third tutorial.
 - `goodness_of_fit(result)` or `goodness_of_fit(chi2=..., dof=...)`
   (new in 0.3.0): the chi-squared test. It returns `chi2`, `dof`,
   `reduced_chi2` (chi2 / dof), `p_value` (probability of a chi2 at
@@ -866,15 +967,22 @@ decay rate 1/tau = 1.006e+09 +/- 9.9e+06 1/s
 **Reading a calibration backwards**
 
 - `inverse_predict(model, result, reading, bracket, reading_sigma=0.0,
-  theta=None, cov=None, n_scan=1001, max_slope_change=0.1)` (new in
-  0.4.0): the setting `x0` at which the model predicts `reading`,
+  theta=None, cov=None, n_scan=1001, max_slope_change=0.1,
+  full_cov=True)` (new in 0.4.0): the setting `x0` at which the model
+  predicts `reading`,
   searched in `bracket = (low, high)` (scanned at `n_scan` points, then
   refined by bisection), with its error bar from the reading's own
   error `reading_sigma` and from the parameter covariance (of `result`,
   or `theta=` and `cov=`). Returns `value`, `sigma`, `cov` (for several
   readings), `slope` (`df/dx` at `x0`), `sigma_from_reading`,
   `sigma_from_parameters` and `slope_change`. The settings must be one
-  number per measurement. See example 13.
+  number per measurement. See example 13. Since 0.5.0 all readings
+  are solved together (the model is evaluated for all of them in one
+  call at each step), 54 to 63 times faster for 100 to 1000 readings
+  than 0.4.0 (medians of 5 to 7 interleaved runs on a shared 2-CPU
+  machine); `full_cov=False` skips the covariance between readings
+  (`cov` is then `None`), so that a series of 10000 readings needs
+  memory for 10000 numbers, not for 10000 x 10000.
 
 **When the model may be wrong** (split conformal prediction)
 
@@ -886,13 +994,18 @@ decay rate 1/tau = 1.006e+09 +/- 9.9e+06 1/s
   scores without ties; it always lies between `1 - alpha` and
   `1 - alpha + 1/(n + 1)`.
 - `alpha` is read as the decimal number you typed: `k` is computed so
-  that `alpha=0.7` means exactly 7/10 (see Corrections below).
+  that `alpha=0.7` means exactly 7/10 (see Corrections below). Since
+  0.5.0 a decimal of up to 8 significant digits (or a value that
+  differs from one only by floating-point rounding, such as
+  `1 - 0.9`) is read exactly at every `n`.
 
 **Records**
 
 - `audit_record(result, operator="", note="")` -- a JSON-ready
   dictionary describing one fit (see example 5), including the
-  model's units note under `model_units`.
+  model's units note under `model_units`. For a fit by `fit_xy` it
+  has one more key, `fit_method` (since 0.5.0), and its digest also
+  covers `x_sigmas`.
 - `report_text(record)` -- the same record as readable text. Records
   written by 0.1.x, which have no `model_units`, still render.
 - `save_measurements_csv(path, x, y, sigmas=None)` and
@@ -957,7 +1070,14 @@ its inputs and conventions.
   solution; or gets a bracket that is not two finite numbers with
   low < high, a reading that is not finite, a negative
   `reading_sigma`, a `FitResult` of another model, both a result and
-  `theta=`/`cov=`, or a covariance that `propagate` would refuse;
+  `theta=`/`cov=`, a covariance that `propagate` would refuse, or
+  (since 0.5.0) a `full_cov` that is not `True` or `False`;
+- `fit_xy` gets no reading errors `sigmas` (without them the balance
+  between the two kinds of error is unknown), `x_sigmas` of the wrong
+  shape, negative or not finite, or a model whose prediction for one
+  measurement changes when the settings of another one change (it is
+  checked once, by moving one row's settings); and it refuses
+  everything `fit` refuses with `sigmas`;
 - `runs_test` gets residuals that are not finite or not a 1-D array,
   an `order` of the wrong length, fewer than 2 nonzero residuals, or
   residuals that all have the same sign (no runs to count);
@@ -991,9 +1111,11 @@ its inputs and conventions.
 
 ## How the results are checked
 
-96 automated tests run on every push and pull request, on Python 3.9,
+111 automated tests run on every push and pull request, on Python 3.9,
 3.10, 3.11, 3.12, 3.13 and 3.14, and once more on Python 3.9 with the
-oldest NumPy the package allows (1.22.0, with pytest 7.0.0). The
+oldest NumPy the package allows (1.22.0, with pytest 7.0.0). Since
+0.5.0 the source distribution includes the files the tests read
+(`CITATION.cff`, `examples/`), so the suite also runs from it. The
 numerical checks compare against a formula, an identity or seeded
 simulation computed in the test itself, not against numbers stored
 from an earlier run. What the tests assert:
@@ -1198,7 +1320,8 @@ from an earlier run. What the tests assert:
   NaN, infinite or non-numeric one, and a fractional `n` in
   `coverage_exact` are refused.
 - `design` (greedy, and with `exchange=True`) returns the same
-  indices and the same information matrix, compared with `==`, as the
+  indices and the same information matrix (compared with `==` in
+  0.4.0, to 1e-12 of the largest entry since 0.5.0) as the
   0.3.0 loops, kept in the test as the reference, on 21 problems (a
   decay, a Gaussian peak with a sloped background and a plane in two
   settings, with 2 to 8 picks from 9 to 60 candidates, including
@@ -1233,6 +1356,63 @@ from an earlier run. What the tests assert:
   numbers agree with each other (error bar parts adding in
   quadrature, the repeat count, the error bar of `1/tau`).
 
+**Added in 0.5.0**
+
+- `fit_xy` on Pearson's data with York's weights (as tabulated by
+  Cantrell, 2008): slope and intercept equal the values Cantrell's
+  Table 2 gives in its "Williamson-York" row (-0.48053 and 5.4799,
+  to the printed digits), and equal York's iteration, written out in
+  the test from the equations as Cantrell gives them, to 1e-6 of an
+  error bar (measured: 4e-10); the error bars equal York's standard
+  errors at the adjusted points (relative 1e-7) and, rounded, the
+  values printed by the R package bfsl (0.29497 and 0.05799, chi2
+  11.87 on 8 degrees of freedom, p = 0.1573). The ordinary weighted
+  fit of the same data gives Cantrell's "Std Lst-Sqrs w/wgts" row
+  (-0.61081 and 6.1001).
+- For a straight line, the minimum chi2 of `fit_xy` equals the closed
+  form `sum (y - a - b x)^2 / (sigma_y^2 + b^2 sigma_x^2)` (relative
+  1e-10) and the fitted settings equal the hand-derived
+  `x + b sigma_x^2 r / (sigma_y^2 + b^2 sigma_x^2)`. For an
+  exponential decay with errors in the times, the gradient of the
+  minimized sum, computed in the test with exact derivatives, is zero
+  at the solution (below 1e-5 in units of the error bars), and the
+  covariance equals the effective-variance formula built from exact
+  derivatives (1e-6 of `sqrt(C_ii C_jj)`). In 300 seeded data sets
+  the scatter of the fitted slope matches its error bar within 15 %,
+  the mean slope is the truth within 4.5 standard errors and chi2
+  averages `n - p`, while `fit` on the same data is biased low by more
+  than 10 standard errors. Exact settings give the result of `fit`
+  (1e-6 of an error bar), an exact second setting column is left as it
+  is, and the fit is the same in seconds and in nanoseconds. Every
+  refusal fires.
+- The conformal rank at large `n`: for alpha = 0.0001 and n = 109998
+  (and for the first failing `n` of alpha 0.001, 0.0001, 0.1234, 0.05
+  and 0.1), `coverage_exact` and `conformal_quantile` use the rank of
+  exact rational arithmetic (this test fails on 0.4.0); for 193
+  alphas, including 1/3, `1 - 0.9` and alphas within 1e-9 of 0.1, and
+  every `n` up to 2000, the rank equals that of 0.4.0.
+- `inverse_predict` for 40 readings of four models (a quadratic, an
+  exponential decay, a saturating response and a logarithm) equals
+  the 0.4.0 loop, kept in the test, within tolerances derived from
+  the rounding of the model (the solution within `2 x 64 eps F / |slope|`
+  for predictions of size `F`; slopes, error bars and covariances
+  within twice the resulting relative bound); readings exactly on a
+  scan point give that point; every refusal gives the 0.4.0 message
+  for the same reading; `full_cov=False` gives the same values and
+  slopes and error bars within the rounding bound of the different
+  summation order; scanning the readings in small blocks gives the
+  same numbers, compared with `==`.
+- The test of the batched `design` against the 0.3.0 loops now
+  compares the information matrices to 1e-12 of their largest entry
+  (and would accept different picks only for a tie within 1e-9 in
+  the log-determinant), instead of digit for digit.
+- The new tutorial prints exactly the output shown above and in its
+  docstring; the unknown is within 3 error bars of its simulated
+  value, the error bar parts add in quadrature, the reading part
+  equals `0.2 / sqrt(5) / c1`, and the ratio of the two error bars on
+  `c1` and the two chi2 values agree with the effective-variance
+  factor `1 + (c1 u_T / u_V)^2`.
+
 Every refusal listed in "When it refuses, and why" is checked to
 fire, including a fit that does not converge within `max_iter` steps
 (a `RuntimeError`) and a parameter that no reading responds to (an
@@ -1242,6 +1422,30 @@ dictionary can be hashed (used as a dictionary key or in a set), and
 equal models hash equally.
 
 ## Corrections in earlier versions
+
+**0.5.0 fixed one wrong answer.**
+
+- *The conformal rank was one too small for some alphas at large n.*
+  The rank `k = ceil((n + 1)(1 - alpha))` took any product within
+  1e-9 (relative) above an integer to be that integer, to undo the
+  binary rounding of a decimal alpha. For large `n` that tolerance
+  is larger than the true fraction: for alpha = 0.0001 (a 99.99 %
+  band) and n = 109998 calibration scores, (n + 1)(1 - alpha) is
+  109988.0001, so `k` should be 109989, but 0.4.0 used 109988.
+  `coverage_exact` then returned 0.99989999909, below the promised
+  1 - alpha = 0.9999, and `conformal_quantile` returned the score one
+  rank too low. With alpha = 0.001 the first such `n` is 1001998.
+  Since 0.5.0 a decimal alpha of up to 8 significant digits (also when
+  it was computed, as `1 - 0.9`) is read exactly and `k` is computed
+  in integer arithmetic; `coverage_exact(109998, 0.0001)` is now
+  0.99990909. For every alpha and `n` the earlier tests covered
+  (alpha 0.001 to 0.999, `n` up to 3000) the rank is unchanged. The
+  error was at most one rank, so the coverage was too low by at most
+  1/(n + 1), but the guarantee is stated exactly, so it was wrong.
+
+Also in 0.5.0: the source distribution left out `CITATION.cff` and
+`examples/`, so one test failed and three were skipped when the suite
+was run from it; it now includes them.
 
 **0.4.0 fixed one wrong refusal.**
 
@@ -1408,6 +1612,21 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   the error bar can still be a few percent too small where the curve
   bends (in the tests the simulated scatter was 1.014 times the error
   bar at a slope change of 10.5 %).
+- `fit_xy` assumes independent Gaussian errors in every reading and
+  every setting, with no correlation between the error of a setting
+  and that of its reading (York's method allows one; `fit_xy` does
+  not). Its error bars are first order, like those of `fit`, and its
+  chi2 follows the chi-squared distribution only approximately for a
+  model that is not a straight line in its parameters and settings.
+  With large setting errors on a curved model, the fitted true
+  settings can be biased; check with simulation when the setting
+  errors are not small next to the curvature. Each measurement's
+  prediction must depend only on its own row of settings. The work
+  grows with the number of measurements times the number of setting
+  columns (there is one unknown per uncertain setting).
+- `inverse_predict` returns, by default, the full covariance of all
+  readings, which needs memory for `n x n` numbers: pass
+  `full_cov=False` for long series.
 - `runs_test` looks only at the signs, so it needs enough residuals
   to have power (with 10 residuals, 5 of each sign, the smallest
   possible `p_value` is 2/252 = 0.008). For
@@ -1418,9 +1637,12 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   calibration data to be exchangeable with the new measurement:
   calibration data from last month's instrument state do not certify
   next month's drift. The tighter bound `1 - alpha + 1/(n + 1)`
-  assumes scores without ties. `alpha` is read to about 9
-  significant digits: an alpha that differs from a "round" value by
-  less than 1e-9 relative is treated as that value.
+  assumes scores without ties. A decimal `alpha` of up to 8
+  significant digits is read exactly (since 0.5.0). Any other alpha
+  (1/3, or 0.099999999999) is read to about 9 significant digits, as
+  before: a product `(n + 1)(1 - alpha)` within 1e-9 (relative) above
+  an integer is taken to be that integer, which for such alphas can
+  still give a rank one too small when `n` is in the millions.
 - `save_measurements_csv` and `load_measurements_csv` use `labplan`'s
   own CSV layout (`x1, ..., y, sigma`). Other delimited text tables
   are read with `load_columns` (since 0.3.0), which needs one header
@@ -1458,7 +1680,16 @@ two samples are from the same population", Ann. Math. Statist. 11,
 147-162 (1940), doi:10.1214/aoms/1177731909. The straight-line case of
 `inverse_predict` is the propagation-of-error formula of the
 NIST/SEMATECH e-Handbook of Statistical Methods, section 2.3.6.7.3
-(https://itl.nist.gov/div898/handbook/mpc/section3/mpc3673.htm).
+(https://itl.nist.gov/div898/handbook/mpc/section3/mpc3673.htm). The
+straight-line case of `fit_xy` is D. York et al., "Unified
+equations for the slope,
+intercept, and standard errors of the best straight line", Am. J.
+Phys. 72, 367-375 (2004), doi:10.1119/1.1632486; its test data and
+reference values are from C. A. Cantrell, "Technical Note: Review of
+methods for linear least-squares fitting of data and application to
+atmospheric chemistry problems", Atmos. Chem. Phys. 8, 5477-5487
+(2008) (https://acp.copernicus.org/articles/8/5477/2008/), Tables 1
+and 2.
 First-order propagation of uncertainty with
 covariances is the "law of propagation of uncertainty" of JCGM
 100:2008, Evaluation of measurement data -- Guide to the expression
