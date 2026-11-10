@@ -13,7 +13,9 @@ questions:
 - **Before measuring:** can the measurements I plan pin down the
   numbers I care about, and how large will the error bars be? Which
   settings are worth the instrument time, and how many repeats do I
-  need for a target error bar?
+  need for a target error bar? How should the measurements be shared
+  among the settings, and how close does a plan come to the best one
+  possible?
 - **After measuring:** what are the fitted numbers, and their error
   bars? Are the readings consistent with the model and their stated
   errors? Do the residuals wander in a pattern the model misses? What
@@ -87,6 +89,14 @@ explains why.
 - **D-optimal design** -- choosing the settings that make the
   determinant of the information matrix largest, which shrinks the
   joint uncertainty of all parameters.
+- **Weights**: the share of all measurements spent at each
+  candidate setting (0.25 means a quarter of them). A design with
+  repeats is a set of weights.
+- **D-efficiency**: how good a design is next to the best weights
+  on the same candidates, as a number from 0 to 1. A design with
+  D-efficiency 0.9 needs 1/0.9 = 1.11 times as many measurements as
+  the best one to make the determinant of the information matrix as
+  large.
 - **Chi-squared (chi2)** -- the sum over all readings of
   ((reading - prediction) / sigma) squared. Divided by the **degrees
   of freedom** (number of readings
@@ -144,9 +154,9 @@ are described in [Tutorials](#tutorials) below.
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with labplan 0.5.0. The model, the numbers and the noise are
-illustrative; the random numbers come from fixed seeds, so the
-output is repeatable.
+printed with labplan 0.6.0 (a test checks this). The model, the
+numbers and the noise are illustrative; the random numbers come from
+fixed seeds, so the output is repeatable.
 
 ### 1. Before measuring: will this design work, and how well?
 
@@ -752,6 +762,77 @@ error bar. The result goes into `goodness_of_fit`, `propagate`,
 holds the fitted true settings. A setting whose error bar is 0 is
 taken as exact.
 
+### 16. Share the measurements, and rate any design
+
+```python
+import numpy as np
+from labplan import (Model, design, design_efficiency, design_weights,
+                     repeats_for)
+
+decay = Model("decay with background",
+              lambda th, x: th[0] * np.exp(-x[:, 0] / th[1]) + th[2],
+              param_names=("amplitude", "tau", "background"),
+              reference="illustrative exponential decay with background")
+guess = [1.0, 1.0, 0.2]
+candidates = np.linspace(0.0, 3.0, 31)       # 0.0, 0.1, ..., 3.0
+
+def between(low, high):          # rounds each bound outward, never inward
+    return (f"{np.floor(low * 1e5) / 1e5:.5f} to "
+            f"{np.ceil(high * 1e5) / 1e5:.5f}")
+
+best = design_weights(decay, guess, candidates, sigmas=0.01, n_total=12)
+used = best["weights"] > 0.001
+print("best shares:", np.round(best["weights"][used], 3),
+      "at", candidates[used])
+c = best["counts"]
+print("12 measurements:", c[c > 0], "at", candidates[c > 0],
+      "| D-efficiency",
+      between(best["counts_efficiency_low"], best["counts_efficiency_high"]))
+
+for exchange in (False, True):
+    pick = design(decay, guess, candidates, n_pick=3, sigmas=0.01,
+                  exchange=exchange)
+    counts = np.bincount(pick["indices"], minlength=candidates.size)
+    eff = design_efficiency(decay, guess, candidates, counts, sigmas=0.01)
+    print(f"design(exchange={exchange}):".ljust(23),
+          candidates[counts > 0], "| D-efficiency",
+          between(eff["efficiency_low"], eff["efficiency_high"]))
+
+r, predicted = repeats_for({"tau": 0.01}, best)
+print("measurements in all for tau +/- 0.01:", r)
+```
+
+```
+best shares: [0.333 0.248 0.085 0.333] at [0.  0.8 0.9 3. ]
+12 measurements: [4 3 1 4] at [0.  0.8 0.9 3. ] | D-efficiency 0.99999 to 1.00000
+design(exchange=False): [0.  1.1 3. ] | D-efficiency 0.97134 to 0.97135
+design(exchange=True):  [0.  0.8 3. ] | D-efficiency 0.99991 to 0.99992
+measurements in all for tau +/- 0.01: 62
+```
+
+`design_weights` (new in 0.6.0) finds the best share of the
+measurements for each candidate setting, repeats allowed. For this
+decay the best design spends a third of the measurements at 0, a
+third at 3 and a third near 0.843: with settings 0, t and 3 the
+determinant is largest at t = 1 - 3 e^-3 / (1 - e^-3) = 0.8428 (a test
+works this out and checks it). On a grid in steps of 0.1 that third is
+shared by 0.8 and 0.9. `n_total=12` turns the shares into whole
+numbers of measurements.
+
+`design_efficiency` rates any design against the best shares on the
+same candidates, with proven lower and upper bounds. The three
+settings that `design` picks one at a time (example 9) reach 0.97134,
+so they need about 1.03 times as many measurements as the best design
+for the same determinant; after the swaps, 0.99991. The lower bound
+needs no search: for any design, the largest variance of the
+predicted reading over the candidates (in units of its error, times
+the number of measurements) is at least the number of parameters `p`,
+equals `p` only for a best design, and `p` divided by it is a lower
+bound on the D-efficiency. The output of `design_weights` goes into
+`repeats_for` like a plan, and `r` is then the number of measurements
+in all: 62 here, against 3 x 21 = 63 for the repeated three-point
+design of example 9.
+
 ## Tutorials
 
 Three complete scripts in [`examples/`](examples/) go from raw data
@@ -890,7 +971,50 @@ reference's error bar, and fitting with it, is what fixes them.
   from the rule that `r` repeats divide the error bars by `sqrt(r)`.
   The target is one number for all parameters, or a dictionary
   `{name: target}`. Returns `r` and the error bars at `r` repeats.
-  `plan` is the output of `information` or `design`.
+  `plan` is the output of `information`, `design`, `design_weights`
+  (then `r` is the number of measurements in all) or
+  `design_efficiency`.
+- `design_weights(model, theta, candidates, sigmas=None, n_total=None,
+  tol=1e-6, max_iter=10000)` (new in 0.6.0): the best share of the
+  measurements for each candidate setting, repeats allowed: the
+  weights `w_i` (adding up to 1) that make the determinant of the
+  information per measurement, `M = sum_i w_i J_i J_i^T / sigma_i^2`,
+  largest. Returns `weights`, `max_variance` (the largest
+  `d_i = J_i^T M^-1 J_i / sigma_i^2`, the variance of the predicted
+  reading at candidate `i` in units of its error, times the number of
+  measurements), `efficiency_bound` (`p / max_variance`, a proven
+  lower bound on the D-efficiency of the weights), `n_iter`, and
+  `fisher`, `identifiable`, `condition_number`, `sigma` and `cov` as
+  `information` gives them for `M`: the error bars for one
+  measurement spread by the weights, so `N` measurements give
+  `sigma / sqrt(N)`. With `n_total`, also `counts`, whole numbers of
+  measurements per candidate that add up to `n_total`, with bounds
+  `counts_efficiency_low` and `counts_efficiency_high`. The weights
+  are found by alternating the multiplicative update
+  `w_i <- w_i d_i / p` and a "vertex exchange" step that moves the
+  best amount of weight from the support point with the smallest
+  `d_i` to the candidate with the largest; the search stops when the
+  largest `d_i` is at most `p (1 + tol)`. The counts are the weights
+  times `n_total` rounded down, filled up one measurement at a time
+  where it helps most and then improved by moving single
+  measurements while that helps.
+- `design_efficiency(model, theta, candidates, counts, sigmas=None,
+  tol=1e-6, max_iter=10000)` (new in 0.6.0): how close the design
+  with `counts[i]` measurements at candidate `i` comes to the best
+  weights on the same candidates. Returns proven bounds
+  `efficiency_low` and `efficiency_high` on its D-efficiency, its own
+  `max_variance`, `n_total`, the plan of the design (`fisher`,
+  `identifiable`, `condition_number`, `sigma`, `cov`, as from
+  `information`) and the best weights under `best`. For the picks of
+  `design`, pass `np.bincount(result["indices"],
+  minlength=len(candidates))`. Why the bounds hold: `sum_i w_i d_i =
+  p` for any weights (a trace identity), so the largest `d_i` is at
+  least `p`; at the best weights it equals `p` (J. Kiefer and J.
+  Wolfowitz, Canadian Journal of Mathematics 12, 363 (1960)); and by
+  the inequality of the arithmetic and geometric means applied to the
+  eigenvalues of `M^-1 M*` (with `M*` the best), the D-efficiency is
+  at least `p / max_i d_i`. A design that cannot identify the
+  parameters gets 0. See example 16.
 
 **Error bars of derived numbers**
 
@@ -942,9 +1066,12 @@ reference's error bar, and fitting with it, is what fixes them.
   `a_i` the slopes with respect to the parameters and `s_ik` those with
   respect to the settings ("effective variance"). chi2 is the minimum
   sum, for `n - p` degrees of freedom. The slopes with respect to the
-  settings are central differences with a step of 1e-6 of the larger
-  of the setting and the largest setting in its column. See example
-  15 and the third tutorial.
+  settings are central differences with a step of 1e-6 of the
+  setting; where that step is zero or does not change the predictions
+  by more than 1e-8 of their size, 1e-6 of the larger of the setting
+  and the largest setting in its column (since 0.6.0; before, the
+  second step was used for every setting, see Corrections). See
+  example 15 and the third tutorial.
 - `goodness_of_fit(result)` or `goodness_of_fit(chi2=..., dof=...)`
   (new in 0.3.0): the chi-squared test. It returns `chi2`, `dof`,
   `reduced_chi2` (chi2 / dof), `p_value` (probability of a chi2 at
@@ -1013,12 +1140,14 @@ reference's error bar, and fitting with it, is what fixes them.
   loading returns `(x, y, sigmas)`, with `sigmas` `None` when the file
   has no sigma column.
 - `load_columns(path, x, y, sigma=None, delimiter=None, decimal=".",
-  comment="#", skip_rows=0, header=True)` (new in 0.3.0): reads
-  the named columns (header names, or positions counted from 0) of
-  any delimited text table, such as an instrument's or a
-  spreadsheet's export, and returns `(x, y, sigmas)` like
-  `load_measurements_csv`. `x` can be one column or a list of
-  columns. See example 12.
+  comment="#", skip_rows=0, header=True, encoding="utf-8-sig")` (new
+  in 0.3.0): reads the named columns (header names, or positions
+  counted from 0) of any delimited text table, such as an
+  instrument's or a spreadsheet's export, and returns `(x, y, sigmas)`
+  like `load_measurements_csv`. `x` can be one column or a list of
+  columns. `skip_rows` must be a whole number (since 0.6.0). The
+  default `encoding` also removes the byte-order mark that some
+  spreadsheet programs write. See example 12.
 - `__version__` -- the package version.
 
 Each function's docstring (`help(labplan.fit)`, for example) gives
@@ -1053,6 +1182,15 @@ its inputs and conventions.
 - `design` is asked for fewer picks than parameters or more picks
   than candidates, or (since 0.3.0) for a number of picks that is not
   a whole number, such as 2.5, which 0.2.0 silently cut to 2;
+- `design_weights` and `design_efficiency` (new in 0.6.0) get
+  candidates that even all together cannot identify the parameters,
+  a `tol` that is not a positive number, or a `max_iter` that is not
+  a whole number of at least 1; `design_weights` also an `n_total`
+  that is not a whole number of at least the number of parameters,
+  and `design_efficiency` `counts` that are not one whole number
+  `>= 0` per candidate, or that are all 0. When the search does not
+  reach `tol` within `max_iter` rounds, `design_weights` raises a
+  `RuntimeError` that gives the efficiency reached;
 - `repeats_for` gets a plan that is not identifiable (no number of
   repeats can fix that), an unknown parameter name, a target that
   is not positive, or (since 0.3.0, with a clear message) an empty
@@ -1101,9 +1239,11 @@ its inputs and conventions.
   is not a number;
 - `load_columns` is asked for a column name that is not in the header
   (the message lists the names that are), a name that appears twice,
-  a position outside the table, or the same column twice; or finds a
-  row with a different number of fields than the header, an empty
-  cell, text, NaN or infinity in a requested column, a reading error
+  a position outside the table, the same column twice, or (since
+  0.6.0) a `skip_rows` that is not a whole number `>= 0` (0.5.0 cut
+  2.7 to 2 without a word); or finds a row with a different number
+  of fields than the header, an empty cell, text, NaN or infinity in
+  a requested column, a reading error
   that is not positive, a header in which more than one of comma, tab
   and semicolon occurs (pass `delimiter=`), a `.` in a number when
   `decimal=","` (a thousands separator?), or no data rows. Each
@@ -1111,7 +1251,7 @@ its inputs and conventions.
 
 ## How the results are checked
 
-111 automated tests run on every push and pull request, on Python 3.9,
+145 automated tests run on every push and pull request, on Python 3.9,
 3.10, 3.11, 3.12, 3.13 and 3.14, and once more on Python 3.9 with the
 oldest NumPy the package allows (1.22.0, with pytest 7.0.0). Since
 0.5.0 the source distribution includes the files the tests read
@@ -1413,6 +1553,56 @@ from an earlier run. What the tests assert:
   `c1` and the two chi2 values agree with the effective-variance
   factor `1 + (c1 u_T / u_V)^2`.
 
+**Added in 0.6.0**
+
+- `design_weights` for polynomials of degree 1 to 5 on [-1, 1] gives
+  the classical best design, equal weights `1/(m + 1)` at -1, 1 and
+  the roots of the derivative of the Legendre polynomial `P_m` (each
+  weight within 1e-6, less than 1e-6 elsewhere). The test does not
+  take that design on trust: it checks with its own code, on 20001
+  points of [-1, 1], that the largest `d(x)` there equals the number
+  of parameters, which proves it best. On a plain grid the line and
+  the quadratic get 1/2 at the ends and 1/3 at -1, 0 and 1 (within
+  1e-9).
+- An exponential decay `A exp(-t / tau)` gets half of the
+  measurements at `t = 0` and half at `t = tau`, and the decay on a
+  background gets thirds at 0, at `1 - 3 e^-3 / (1 - e^-3)` and at 3
+  (for `tau = 1` on [0, 3]); both are worked out by hand in the tests
+  and proven best there in the same way.
+- For a decay on a background, a Gaussian peak and a quadratic
+  surface in two settings, `sum_i w_i d_i = p` (relative 1e-8, with
+  `d_i` recomputed in the test), the largest `d_i` is at most
+  `p (1 + tol)`, and `fisher`, `sigma` and `cov` are those of `M`. The
+  weights do not change when the parameters and settings are written
+  in seconds or nanoseconds or all reading errors are scaled
+  (1e-6); with exactly `p` candidates they are `1/p` whatever the
+  reading errors.
+- For 300 random designs on 21 candidates for a quadratic, whose best
+  design is known exactly, the bounds of `design_efficiency` contain
+  the exact D-efficiency (designs that cannot identify the parameters
+  get 0); the same for the picks of `design`.
+- In 24 small problems (4 models, 5 to 8 candidates, `n_total` from
+  `p` to `p + 5`) the `counts` are as good as the best of all
+  multisets of measurements, found by checking each one. That does
+  not prove the rounding is always best; its bounds are reported.
+- For the line with exact slopes and reading error 0.05,
+  `repeats_for` on the best weights returns 25 measurements for a
+  target of 0.01, and 13 measurements at each end give error bars of
+  `0.05 / sqrt(26)` (relative 1e-9).
+- `fit_xy` on a logarithmic response with settings from 2e-3 to 1e3
+  and from 1e-3 to 1e3: the gradient of the minimized sum, computed
+  in the test with exact derivatives, is zero at the solution (below
+  1e-5 in units of the error bars), and the covariance equals the
+  effective-variance formula built from exact derivatives (this test
+  fails on 0.5.0, which stopped at a gradient of 0.009 for the first
+  set and refused the second).
+- The refusal of `conformal_quantile` names the level to enough
+  digits (0.9999 for alpha = 0.0001), and `load_columns` refuses a
+  `skip_rows` of 2.7 (both fail on 0.5.0).
+- Every Python example in this README runs and prints exactly the
+  output shown below it (16 tests; before 0.6.0 only the tutorials
+  were checked this way).
+
 Every refusal listed in "When it refuses, and why" is checked to
 fire, including a fit that does not converge within `max_iter` steps
 (a `RuntimeError`) and a parameter that no reading responds to (an
@@ -1422,6 +1612,38 @@ dictionary can be hashed (used as a dictionary key or in a set), and
 equal models hash equally.
 
 ## Corrections in earlier versions
+
+**0.6.0 fixed one wrong answer.**
+
+- *`fit_xy` used too large a step for the slopes with respect to
+  settings spread over many decades.* The slope `df/dx` of every
+  setting was taken with a step of 1e-6 of the largest setting in its
+  column. For settings from 2e-3 to 1e3 that step is 1e-3, half the
+  smallest setting, so the slopes there were wrong and the fit
+  stopped where the minimized sum is not at its minimum. For a
+  response `a + b log(x)` with 13 such settings, each with a 5 % error
+  (the data of the new test), 0.5.0 returned a = 0.99719970 +/-
+  0.00896739 and b = 0.49912153 +/- 0.00221872, chi2 = 10.286626;
+  0.6.0 returns a = 0.99716394 +/- 0.00890988 and b = 0.49913337 +/-
+  0.00219089, chi2 = 10.286532. The values moved by 0.004 and 0.005 of
+  an error bar, the fitted settings by up to 0.006 of theirs, and the
+  old error bars were 0.6 % and 1.3 % too large. An independent fit of
+  the same sum with exact derivatives (SciPy's `least_squares`, run
+  outside the test suite) agrees with 0.6.0 to 3e-10 of an error bar.
+  With settings from 1e-3 the step reached zero, `log(0)` is not
+  finite, and 0.5.0 refused the fit. Since 0.6.0 the step is 1e-6 of
+  each setting, and the old step is kept only where that does not
+  resolve the change, as `Model.numeric_jacobian` does for
+  parameters. Other fits change only at the level of the search's
+  stopping rule: on the Pearson-York data, 20 seeded decays with
+  errors in the times and a two-setting model, by at most 7e-8 of an
+  error bar (values) and 1.5e-9 (relative, error bars).
+
+Also in 0.6.0: the refusal of `conformal_quantile` printed the level
+to 3 digits, so any alpha below 0.0005 said "cannot certify level 1"
+(alpha = 0.0001 now says 0.9999); and `load_columns(skip_rows=2.7)`
+silently skipped 2 lines, and now refuses, as `design` has refused
+`n_pick=2.5` since 0.3.0.
 
 **0.5.0 fixed one wrong answer.**
 
@@ -1597,12 +1819,33 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   each step and does not prove that the chosen set is the best
   possible. `exchange=True` improves it until no single swap helps,
   which in the tests reached the best subset every time, but that is
-  still not a proof. Each swap pass tries every chosen setting
+  still not a proof. Since 0.6.0 `design_efficiency` gives proven
+  bounds on how close any design comes to the best one on the same
+  candidates (example 16). Each swap pass tries every chosen setting
   against every unused one; since 0.4.0 these are scored in batches
   (3000 candidates take a fraction of a second), but the work still
   grows with the number of picks times the number of candidates for
   every pass. It picks each candidate at most once; use `repeats_for`
-  for repeats.
+  to repeat the whole design, or `design_weights` (since 0.6.0) to
+  share measurements among the candidates with repeats.
+- `design_weights` and `design_efficiency` judge a design by the
+  determinant only (the joint uncertainty of all parameters). The
+  design that is best for the error bar of one parameter, or of one
+  predicted reading, can be different; check such error bars with
+  `information` or `propagate`. For a model that is not a
+  straight-line function of its parameters the answer depends on the
+  guessed parameters, as for `information`. "Best" means best among
+  the candidates you give: the best setting can lie between two
+  candidates, and on a fine grid its weight is then shared between
+  neighbors (0.8 and 0.9 in example 16). `tol` limits the efficiency,
+  not the weights: near the best design the determinant is flat, so
+  weights that are within `tol` in efficiency can differ from the
+  best weights by more than `tol`. The whole numbers `counts` come
+  from rounding and are not proven best (their efficiency bounds are
+  returned). Each round of the search costs about the number of
+  candidates times the square of the number of parameters; on a
+  2-CPU machine a quartic on 2001 candidates took 0.6 s and a
+  polynomial of degree 5 on 501 candidates 1.2 s (medians of 3 runs).
 - `inverse_predict` needs settings that are one number per
   measurement and a bracket in which the model reaches the reading
   exactly once. It scans the bracket at `n_scan` points, so two
@@ -1620,9 +1863,13 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   model that is not a straight line in its parameters and settings.
   With large setting errors on a curved model, the fitted true
   settings can be biased; check with simulation when the setting
-  errors are not small next to the curvature. Each measurement's
-  prediction must depend only on its own row of settings. The work
-  grows with the number of measurements times the number of setting
+  errors are not small next to the curvature. Its slopes with respect
+  to the settings are finite differences with a step of 1e-6 of each
+  setting; a setting at or very near zero gets 1e-6 of the largest
+  setting in its column instead, which can be too coarse for a model
+  that bends sharply near zero. Each measurement's prediction must
+  depend only on its own row of settings. The work grows with the
+  number of measurements times the number of setting
   columns (there is one unknown per uncertain setting).
 - `inverse_predict` returns, by default, the full covariance of all
   readings, which needs memory for `n x n` numbers: pass
@@ -1669,7 +1916,11 @@ Theoretical Statistics (1974); any statistics text under
 "Cramer-Rao bound"). D-optimal design follows F. Pukelsheim, Optimal
 Design of Experiments, SIAM (2006), and the swap refinement the
 exchange idea of V. V. Fedorov, Theory of Optimal Experiments,
-Academic Press (1972). The chi-squared test computes the regularized
+Academic Press (1972). The check that best weights have a largest
+variance function equal to the number of parameters is the
+equivalence theorem of J. Kiefer and J. Wolfowitz, "The equivalence
+of two extremum problems", Canadian Journal of Mathematics 12,
+363-366 (1960). The chi-squared test computes the regularized
 incomplete gamma functions (NIST Digital Library of Mathematical
 Functions, chapter 8) by the series and continued fraction of W. H.
 Press, S. A. Teukolsky, W. T. Vetterling and B. P. Flannery,

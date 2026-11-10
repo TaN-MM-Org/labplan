@@ -5,6 +5,97 @@ against a closed form, an exact identity, or seeded simulation
 against an exact formula; the release notes on GitHub carry the full
 anchor lists.
 
+## 0.6.0 (2026-11-10)
+
+### Added
+
+- `design_weights(model, theta, candidates, sigmas=None, n_total=None,
+  tol=1e-6, max_iter=10000)`: the best share of the measurements for
+  each candidate setting, repeats allowed (D-optimal weights). It
+  returns the weights, the largest value `max_variance` of the
+  variance function `d_i = J_i^T M^-1 J_i / sigma_i^2` (with `M` the
+  information per measurement), the proven lower bound
+  `efficiency_bound = p / max_variance` on the D-efficiency of the
+  weights, and the plan of `M` (`fisher`, `identifiable`,
+  `condition_number`, `sigma`, `cov`), which `repeats_for` accepts (its
+  `r` is then the number of measurements in all). With `n_total` it
+  also returns whole numbers of measurements per candidate, `counts`,
+  with bounds on their efficiency. The search alternates the
+  multiplicative update `w_i <- w_i d_i / p` and a vertex-exchange step
+  with the exact best step length, and stops when the largest `d_i` is
+  at most `p (1 + tol)`. On a 2-CPU machine, 2001 candidates for a
+  quartic took 0.6 s (median of 3 runs).
+- `design_efficiency(model, theta, candidates, counts, sigmas=None,
+  tol=1e-6, max_iter=10000)`: proven lower and upper bounds on the
+  D-efficiency of any design (for example the picks of `design`)
+  against the best weights on the same candidates. The lower bound
+  `p / max_i d_i` follows from the inequality of the arithmetic and
+  geometric means; at the best weights the largest `d_i` equals `p`
+  (J. Kiefer and J. Wolfowitz, "The equivalence of two extremum
+  problems", Canadian Journal of Mathematics 12, 363-366 (1960)).
+  For README example 9 the greedy triple has D-efficiency 0.97134 to
+  0.97135 and the swapped one 0.99991 to 0.99992.
+- README example 16 (sharing measurements, rating designs), and a test
+  that runs every README example and compares its output with the one
+  printed in the README.
+
+### Fixed
+
+- `fit_xy` took the slope `df/dx` of every setting with a step of
+  1e-6 of the largest setting in its column. For settings spread over
+  many decades that step is close to the smallest settings, so the
+  slopes there were wrong and the fit stopped away from the minimum.
+  Before: a response `a + b log(x)` with 13 settings from 2e-3 to 1e3
+  (each with a 5 % error; the data of the new test) gave
+  a = 0.99719970 +/- 0.00896739, b = 0.49912153 +/- 0.00221872,
+  chi2 = 10.286626; with settings from 1e-3 to 1e3 the step reached
+  zero and the fit was refused as "non-finite". After:
+  a = 0.99716394 +/- 0.00890988, b = 0.49913337 +/- 0.00219089,
+  chi2 = 10.286532, equal to an independent fit with exact
+  derivatives (SciPy's `least_squares`, run outside the test suite)
+  to 3e-10 of an error bar; the second set is fitted. The step is now
+  1e-6 of each setting, and the old step is used only where that does
+  not resolve the change, as in `Model.numeric_jacobian`. On the
+  Pearson-York data, 20 seeded decays with errors in the times and a
+  two-setting model, the results change by at most 7e-8 of an error
+  bar (values) and 1.5e-9 (relative, error bars); README example 15
+  and the third tutorial print the same (test
+  `test_fit_xy_settings_over_many_decades`, which fails on 0.5.0).
+- The refusal of `conformal_quantile` printed the level with 3
+  digits. Before: alpha = 0.0001 gave "cannot certify level 1". After:
+  "cannot certify level 0.9999" (10 digits; README example 6 prints
+  the same as before; test `test_conformal_refusal_names_the_level`).
+- `load_columns(skip_rows=2.7)` skipped 2 lines without a word, and
+  `skip_rows=True` skipped 1. Both are now refused; whole numbers,
+  also `2.0` or `"2"`, work as before (test
+  `test_skip_rows_must_be_a_whole_number`).
+
+### Changed
+
+- Version 0.6.0 in `pyproject.toml`, `labplan.__version__` and
+  `CITATION.cff` (released 2026-11-10). README: the new functions,
+  refusals, tests, correction and limits; word guide entries for
+  weights and D-efficiency; the `load_columns` signature now shows
+  `encoding`. The printed output of README examples 1 to 15 and of
+  the scripts in `examples/` is unchanged (apart from the version and
+  the timestamp in the record that example 01 prints).
+
+### Tests
+
+- 34 new tests (145 in total): `tests/test_design_weights.py` (15:
+  polynomials of degree 1 to 5 against the classical design at the
+  roots of `(1 - x^2) P_m'(x)`, proven best in the test by the
+  equivalence theorem on a fine grid; an exponential decay and a decay
+  on a background against designs worked out by hand; the identity
+  `sum_i w_i d_i = p`; the efficiency bounds against the exact optimum
+  of a quadratic for 300 random designs; the counts against every
+  multiset of measurements in 24 small problems; `repeats_for`, units,
+  reading errors and every refusal), `tests/test_fixes_060.py` (3, each
+  failing on 0.5.0) and `tests/test_readme_examples.py` (16, one per
+  README example).
+- The suite was also run with Python 3.9, NumPy 1.22.0 and pytest
+  7.0.0 (the CI oldest-dependencies job).
+
 ## 0.5.0 (2026-10-18)
 
 ### Added
