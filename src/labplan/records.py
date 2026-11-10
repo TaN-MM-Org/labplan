@@ -153,7 +153,9 @@ def load_columns(path, x, y, sigma=None, *, delimiter=None,
     comment : lines whose first non-blank character is this are
         skipped (None to switch off). Blank lines are skipped.
     skip_rows : number of lines to skip at the top before anything
-        else (an instrument's preamble that is not marked as comment).
+        else (an instrument's preamble that is not marked as comment);
+        a whole number >= 0 (since 0.6.0 a fraction such as 2.7 is
+        refused; before, it was cut to 2).
     header : True when the first remaining line names the columns;
         False when there is no header (then columns are positions).
     encoding : text encoding; the default also removes the byte-order
@@ -187,9 +189,16 @@ def load_columns(path, x, y, sigma=None, *, delimiter=None,
         if delimiter == decimal:
             raise ValueError("the delimiter and the decimal mark must "
                              "differ")
-    skip_rows = int(skip_rows)
-    if skip_rows < 0:
-        raise ValueError("skip_rows must be >= 0")
+    # a whole number >= 0 (since 0.6.0; 0.5.0 cut 2.7 to 2 silently)
+    try:
+        rows_f = float(skip_rows)
+    except (TypeError, ValueError):
+        rows_f = np.nan
+    if isinstance(skip_rows, bool) or not np.isfinite(rows_f) \
+            or rows_f != int(rows_f) or rows_f < 0:
+        raise ValueError(f"skip_rows must be a whole number >= 0; got "
+                         f"{skip_rows!r}")
+    skip_rows = int(rows_f)
     if comment is not None and (not isinstance(comment, str)
                                 or len(comment) != 1):
         raise ValueError("comment must be one character or None")

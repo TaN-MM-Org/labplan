@@ -61,10 +61,12 @@ def _x_sigmas(x_sigmas, n, d):
 
 
 def _x_steps(xi, x, xs):
-    """Central-difference steps for df/dx: 1e-6 of the larger of the
-    setting's size and the largest size in its column (the column's
-    natural scale), so that a setting at or near zero still gets a
-    step that resolves the change."""
+    """The fallback central-difference steps for df/dx: 1e-6 of the
+    larger of the setting's size and the largest size in its column
+    (the column's natural scale), so that a setting at or near zero
+    still gets a step that resolves the change. Until 0.6.0 this was
+    the step for every setting; since 0.6.0 `_x_slopes` uses it only
+    where the relative step 1e-6 |xi| does not resolve the change."""
     col = np.max(np.abs(x), axis=0)
     col = np.where(col > 0.0, col, np.max(xs, axis=0))
     col = np.where(col > 0.0, col, 1.0)
@@ -73,14 +75,39 @@ def _x_steps(xi, x, xs):
 
 def _x_slopes(model, theta, xi, h, cols):
     """df_i/dx_ik for the columns in cols; a row's prediction must
-    depend only on that row's settings (checked once by `fit_xy`)."""
+    depend only on that row's settings (checked once by `fit_xy`).
+
+    Since 0.6.0 the step is first 1e-6 of the setting itself, as
+    `Model.numeric_jacobian` does for parameters, so it does not
+    depend on how far the other settings of the column reach. Where
+    that step is zero (a setting at zero) or changes the predictions
+    by no more than 1e-8 of their largest size (the test of
+    `Model.numeric_jacobian`), the fallback step h of `_x_steps` is
+    used, as before. Before 0.6.0 every setting got the fallback step,
+    1e-6 of the column's largest setting: for settings spread over
+    many decades that step is as large as the smallest settings, so
+    the slopes there were wrong (and a model such as log(x) was
+    refused as non-finite when the step reached zero)."""
     s = np.zeros(xi.shape)
     for k in cols:
+        hr = 1e-6 * np.abs(xi[:, k])
+        step = np.where(hr > 0.0, hr, h[:, k])
         xp, xm = xi.copy(), xi.copy()
-        xp[:, k] += h[:, k]
-        xm[:, k] -= h[:, k]
-        s[:, k] = (model.predict(theta, xp) - model.predict(theta, xm)) \
-            / (2.0 * h[:, k])
+        xp[:, k] += step
+        xm[:, k] -= step
+        fp, fm = model.predict(theta, xp), model.predict(theta, xm)
+        size = max(float(np.max(np.abs(fp))), float(np.max(np.abs(fm))))
+        coarse = (hr > 0.0) & (np.abs(fp - fm) <= 1e-8 * size) \
+            & (hr != h[:, k])
+        if np.any(coarse):
+            # only the coarse rows are taken from this second call; the
+            # others keep the values of the relative step
+            step = np.where(coarse, h[:, k], step)
+            xp[:, k] = xi[:, k] + step
+            xm[:, k] = xi[:, k] - step
+            fp = np.where(coarse, model.predict(theta, xp), fp)
+            fm = np.where(coarse, model.predict(theta, xm), fm)
+        s[:, k] = (fp - fm) / (2.0 * step)
     return s
 
 
@@ -175,8 +202,12 @@ def fit_xy(model: Model, x, y, theta0, sigmas, x_sigmas, *,
     `audit_record`.
 
     The slopes df/dx are central differences with a step of 1e-6 of
-    the larger of the setting's size and the largest size in its
-    column. Refuses what `fit` refuses, missing `sigmas`, `x_sigmas`
+    the setting's size; where that step is zero or does not resolve
+    the change in the predictions, 1e-6 of the larger of the setting's
+    size and the largest size in its column (since 0.6.0; before, the
+    second step was used everywhere, which made the slopes wrong for
+    settings spread over many decades). Refuses what `fit` refuses,
+    missing `sigmas`, `x_sigmas`
     of the wrong shape or negative, and a model whose predictions of
     one row change with the settings of another.
     """

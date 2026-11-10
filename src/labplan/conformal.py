@@ -109,9 +109,11 @@ def conformal_quantile(scores, alpha: float = 0.1) -> float:
     k = _rank(n, a)
     if k > n:
         need = _min_n(a)
+        # the level to 10 digits: with 3 (before 0.6.0) any alpha below
+        # 0.0005 printed as "level 1"
         raise ValueError(
             f"{n} calibration scores cannot certify level "
-            f"{1 - a:.3g}: the required rank {k} exceeds n. Collect "
+            f"{1 - a:.10g}: the required rank {k} exceeds n. Collect "
             f"at least {need} calibration measurements, or lower the "
             "confidence")
     return float(np.sort(s)[k - 1])

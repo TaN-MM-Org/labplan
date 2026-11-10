@@ -29,7 +29,10 @@ calibration), and `runs_test` checks whether the residuals come in
 long blocks of one sign, a misfit chi-squared cannot see. Since 0.5.0,
 `fit_xy` fits when the settings have error bars too (errors in
 variables; for a straight line the method of York et al., Am. J.
-Phys. 72, 367 (2004)). And every fit
+Phys. 72, 367 (2004)). Since 0.6.0, `design_weights` shares the
+measurements among the candidate settings as well as possible (repeats
+allowed), and `design_efficiency` gives proven bounds on how close any
+design comes to that best one. And every fit
 can be turned into an audit record that states what was fitted, to
 exactly which data (sha256), by which software versions, when.
 
@@ -47,6 +50,7 @@ from .model import Model
 from .fit import FitResult, fit, goodness_of_fit
 from .fitxy import fit_xy
 from .plan import design, information, repeats_for
+from .weights import design_efficiency, design_weights
 from .propagate import propagate
 from .inverse import inverse_predict
 from .runs import runs_test
@@ -56,10 +60,11 @@ from .report import audit_record, report_text
 from .records import (load_columns, load_measurements_csv,
                       save_measurements_csv)
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = [
     "Model", "FitResult", "fit", "fit_xy", "goodness_of_fit",
-    "information", "design", "repeats_for", "propagate",
+    "information", "design", "repeats_for", "design_weights",
+    "design_efficiency", "propagate",
     "inverse_predict", "runs_test",
     "conformal_quantile", "conformal_interval", "coverage_exact",
     "audit_record", "report_text",
