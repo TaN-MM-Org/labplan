@@ -1,7 +1,7 @@
 """0.2.0 anchors for slopes and design.
 
 - A parameter that is exactly zero no longer gets a blind absolute
-  step: the Gaussian-pulse centre t0 = 0 written in seconds (width
+  step: the Gaussian-pulse center t0 = 0 written in seconds (width
   1 ns) gets slopes that match the exact derivative, planned error
   bars that match the exact information matrix, and the same answer
   as the model written in nanoseconds. In 0.1.1 the slope of t0 was

@@ -73,10 +73,22 @@ def test_conformal_rank_unchanged_where_it_was_right():
     alphas += [round(v, 4) for v in
                np.random.default_rng(1).uniform(1e-4, 0.9999, 40)]
     alphas += [1 / 3, 2 / 3, 1 / 7, 1 - 0.9, 0.1 * 3, 1 - 0.95,
-               0.7 - 0.6, 0.099999999999, 0.0999999999, 0.1 + 1e-12]
+               0.7 - 0.6, 0.1 + 1e-12]
     for alpha in alphas:
         for n in range(1, 2001):
             assert _rank(n, alpha) == _rank_040(n, alpha), (alpha, n)
+    # Since 0.7.0 two alphas of this list are read as typed, not as
+    # 0.1: there the 0.4.0 rank was one too small (coverage below
+    # 1 - alpha) at every n + 1 that is a multiple of 10. The rank is
+    # now the exact one, and never below the 0.4.0 rank.
+    for alpha in (0.099999999999, 0.0999999999):
+        fa = Fraction(repr(alpha))
+        changed = 0
+        for n in range(1, 2001):
+            k = math.ceil((n + 1) * (1 - fa))
+            assert _rank(n, alpha) == k >= _rank_040(n, alpha)
+            changed += k != _rank_040(n, alpha)
+        assert changed == 200
     # alphas computed by arithmetic are read as the decimal they stand
     # for, also at large n
     n = _first_wrong_n(0.1)
