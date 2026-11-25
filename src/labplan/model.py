@@ -163,6 +163,13 @@ class Model:
         times, and then checked in the same way. Before 0.4.0 the
         slopes were refused as non-finite.
 
+        Since 0.7.0 the opposite case is handled too: when the step
+        finally used changes the predictions so little that rounding
+        could make up more than 1e-4 of the slopes (a detuning of 0 Hz
+        in a model whose times are in seconds), the step is enlarged
+        and the result checked; see `_enlarge`. Slopes with less
+        rounding than that are unchanged.
+
         rel_step must be a finite positive number (since 0.4.0; 0 or a
         negative value raised an UnboundLocalError before)."""
         rel_step = _check_rel_step(rel_step)
@@ -176,6 +183,7 @@ class Model:
             tm[j] -= h
             return self.predict(tp, x), self.predict(tm, x)
 
+        size = None
         for j in range(self.n_params):
             h = rel_step * abs(theta[j])
             resolved = False
@@ -185,9 +193,14 @@ class Model:
             h_old = rel_step * max(abs(theta[j]), 1e-3)
             if not resolved and h_old != h:
                 h_old, fp, fm = _finite_fallback(shifted, j, h_old)
-                jac[:, j] = _refine(shifted, j, h_old, fp, fm)
+                col, h = _refine(shifted, j, h_old, fp, fm)
             else:
-                jac[:, j] = (fp - fm) / (2.0 * h)
+                col = (fp - fm) / (2.0 * h)
+            if not resolved:
+                if size is None:
+                    size = float(np.max(np.abs(self.predict(theta, x))))
+                col = _enlarge(shifted, j, h, col, size)
+            jac[:, j] = col
         return jac
 
 
@@ -248,7 +261,7 @@ def _refine(shifted, j, h, fp, fm, max_steps=8):
     the disagreement stops shrinking (rounding, or noise in the model
     itself, has taken over), or after max_steps."""
     d = (fp - fm) / (2.0 * h)
-    best_d, best_diff = d, np.inf
+    best_d, best_h, best_diff = d, h, np.inf
     for _ in range(max_steps):
         h2 = h / 10.0
         fp2, fm2 = shifted(j, h2)
@@ -259,12 +272,62 @@ def _refine(shifted, j, h, fp, fm, max_steps=8):
         diff = float(np.max(np.abs(d2 - d)))
         noise = 16.0 * _EPS * size / h2
         if diff <= 1e-6 * float(np.max(np.abs(d2))) + noise:
-            return d
+            return d, h
         if diff >= best_diff:
             break
-        best_d, best_diff = d, diff
+        best_d, best_h, best_diff = d, h, diff
         d, h = d2, h2
-    return best_d
+    return best_d, best_h
+
+
+def _enlarge(shifted, j, h, d, size, max_steps=16):
+    """Slopes that floating-point rounding has swamped, taken again
+    with a larger step (since 0.7.0).
+
+    d are the slopes from the step h, which did not change the
+    predictions by more than 1e-8 of their size. When a bound on the
+    rounding error of d, 16 eps size / h, is more than 1e-4 of the
+    largest |d| (or d is all zero), the step is multiplied by 10, at
+    most max_steps times, until it does change the predictions by
+    more than 1e-8 of their size. The slopes from that step are used
+    only if a step 10 times larger again gives the same slopes, within
+    1e-6 of the largest slope plus the rounding bound; that shows the
+    step is small enough for the model to be straight over it.
+    Otherwise (no step resolves the change, the model is not finite
+    there, or the two steps disagree, as for a parameter whose first
+    derivative really is zero) d is returned unchanged.
+
+    This is the case of a parameter whose natural size is far above
+    1e-3 in its own units but that sits at or near zero: a detuning
+    of 0 Hz in a model with times in seconds, say. The fallback step
+    1e-9 Hz then moves a phase of 2 pi f t by about 6e-14 over 10 us,
+    and before 0.7.0 its slopes were 1.2 % wrong (over 0.1 us they
+    were pure rounding, and the plan was refused as not
+    identifiable)."""
+    noise = 16.0 * _EPS * size / h
+    if not noise > 1e-4 * float(np.max(np.abs(d))):
+        return d
+    for _ in range(max_steps):
+        h = 10.0 * h
+        try:
+            with np.errstate(divide="ignore", over="ignore",
+                             invalid="ignore"):
+                fp, fm = shifted(j, h)
+                if _resolved(fp, fm):
+                    fp2, fm2 = shifted(j, 10.0 * h)
+                    break
+        except ValueError:
+            return d
+    else:
+        return d
+    big = (fp - fm) / (2.0 * h)
+    check = (fp2 - fm2) / (20.0 * h)
+    size = max(np.max(np.abs(fp)), np.max(np.abs(fm)))
+    diff = float(np.max(np.abs(big - check)))
+    if diff <= 1e-6 * float(np.max(np.abs(big))) \
+            + 16.0 * _EPS * size / h:
+        return big
+    return d
 
 
 def _settings(x):

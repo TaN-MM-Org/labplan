@@ -32,7 +32,11 @@ variables; for a straight line the method of York et al., Am. J.
 Phys. 72, 367 (2004)). Since 0.6.0, `design_weights` shares the
 measurements among the candidate settings as well as possible (repeats
 allowed), and `design_efficiency` gives proven bounds on how close any
-design comes to that best one. And every fit
+design comes to that best one. Since 0.7.0, `fit_xy` takes a
+correlation between the error of each setting and that of its reading
+(`xy_correlation`), and `propagate_mc` propagates the covariance by
+random draws (JCGM 101:2008) instead of the straight-line
+approximation. And every fit
 can be turned into an audit record that states what was fitted, to
 exactly which data (sha256), by which software versions, when.
 
@@ -51,7 +55,7 @@ from .fit import FitResult, fit, goodness_of_fit
 from .fitxy import fit_xy
 from .plan import design, information, repeats_for
 from .weights import design_efficiency, design_weights
-from .propagate import propagate
+from .propagate import propagate, propagate_mc
 from .inverse import inverse_predict
 from .runs import runs_test
 from .conformal import (conformal_interval, conformal_quantile,
@@ -60,11 +64,11 @@ from .report import audit_record, report_text
 from .records import (load_columns, load_measurements_csv,
                       save_measurements_csv)
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 __all__ = [
     "Model", "FitResult", "fit", "fit_xy", "goodness_of_fit",
     "information", "design", "repeats_for", "design_weights",
-    "design_efficiency", "propagate",
+    "design_efficiency", "propagate", "propagate_mc",
     "inverse_predict", "runs_test",
     "conformal_quantile", "conformal_interval", "coverage_exact",
     "audit_record", "report_text",

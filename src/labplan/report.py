@@ -46,7 +46,9 @@ def audit_record(result: FitResult, operator: str = "",
     note : anything else worth remembering, recorded verbatim.
 
     A result of `fit_xy` (since 0.5.0) also gets the key `fit_method`;
-    records of `fit` have the same keys as before.
+    records of `fit` have the same keys as before. Since 0.7.0 its text
+    ends in ", correlated with each other" for a fit with
+    `xy_correlation`.
     """
     from . import __version__
     if not isinstance(operator, str) or not isinstance(note, str):
@@ -78,6 +80,9 @@ def audit_record(result: FitResult, operator: str = "",
         # since 0.5.0; the key is absent for `fit`, as in earlier records
         rec["fit_method"] = ("fit_xy: errors in the settings and in the "
                              "readings")
+        if getattr(result, "xy_correlation", None) is not None:
+            # since 0.7.0
+            rec["fit_method"] += ", correlated with each other"
     # the record must survive serialization exactly
     json.dumps(rec)
     return rec

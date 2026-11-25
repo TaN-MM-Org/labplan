@@ -26,6 +26,8 @@ last month's instrument state do not certify next month's drift.
 """
 from __future__ import annotations
 
+import functools
+import math
 from fractions import Fraction
 
 import numpy as np
@@ -40,6 +42,7 @@ __all__ = ["conformal_quantile", "conformal_interval",
 _ULP_ONE = float(np.finfo(float).eps)
 
 
+@functools.lru_cache(maxsize=256)
 def _decimal_alpha(a):
     """The decimal number alpha stands for, as an exact Fraction, when
     alpha is a decimal of at most 8 significant digits (0.1, 0.05,
@@ -53,35 +56,66 @@ def _decimal_alpha(a):
     return None
 
 
+@functools.lru_cache(maxsize=256)
+def _fraction_alpha(a):
+    """alpha as a fraction with a denominator of at most 10**6 (1/3,
+    2/7, 1/3000) when the float alpha is within floating-point
+    rounding of one (the tolerance of `_decimal_alpha`); otherwise
+    None (since 0.7.0)."""
+    frac = Fraction(a).limit_denominator(10 ** 6)
+    if frac.numerator > 0 and \
+            abs(float(frac) - a) <= min(4.0 * _ULP_ONE, 1e-9 * a):
+        return frac
+    return None
+
+
+@functools.lru_cache(maxsize=256)
+def _read_alpha(a):
+    """The exact number that alpha stands for, as a Fraction (since
+    0.7.0). In this order:
+
+    1. a decimal of at most 8 significant digits, up to floating-point
+       rounding (0.1, 0.0001, and also 1 - 0.9); since 0.5.0;
+    2. a fraction with a denominator of at most 10**6, up to the same
+       rounding (1/3, 2/7);
+    3. otherwise the shortest decimal that gives back the same float,
+       which is the number as typed for any decimal of up to 15
+       significant digits (0.099999999999 stays 0.099999999999)."""
+    for read in (_decimal_alpha, _fraction_alpha):
+        value = read(a)
+        if value is not None:
+            return value
+    return Fraction(repr(a))
+
+
 def _rank(n, a):
     """k = ceil((n + 1)(1 - a)), with alpha read as the number the
-    user typed.
+    user typed (see `_read_alpha`), in exact integer arithmetic at
+    every n.
 
-    When alpha is a decimal of at most 8 significant digits (up to
-    floating-point rounding, see `_decimal_alpha`), k is computed in
-    exact integer arithmetic from that decimal, at every n (since
-    0.5.0). Other values keep the rule of 0.2.0 to 0.4.0: in binary
-    floating point 1 - 0.7 is 0.30000000000000004, so a plain ceil
-    turns an exact integer such as 10 * 0.3 = 3 into 4, and a product
-    within 1e-9 (relative) above an integer is taken to be that
-    integer. Before 0.5.0 that rule was used for every alpha, and for
-    large n it also swallowed true fractions: for alpha = 0.0001 and
-    n = 109998 it gave k = 109988 instead of 109989, a coverage
-    below 1 - alpha."""
-    dec = _decimal_alpha(a)
-    if dec is not None:
-        num = (n + 1) * (dec.denominator - dec.numerator)
-        return -(-num // dec.denominator)
-    t = (n + 1) * (1.0 - a)
-    return int(np.ceil(t - 1e-9 * max(1.0, t)))
+    History. In binary floating point 1 - 0.7 is 0.30000000000000004,
+    so a plain ceil turns an exact integer such as 10 * 0.3 = 3 into
+    4. From 0.2.0 to 0.4.0 a product within 1e-9 (relative) above an
+    integer was taken to be that integer; for large n that also
+    swallowed true fractions (alpha = 0.0001 and n = 109998 gave
+    k = 109988 instead of 109989, a coverage below 1 - alpha). 0.5.0
+    read decimals of up to 8 digits exactly and kept the old rule for
+    every other alpha. That rule read alpha = 0.099999999999 as 0.1:
+    for n = 9 it gave k = 9 and a coverage of 0.9, below the promised
+    1 - alpha = 0.900000000001. Since 0.7.0 every alpha is read
+    exactly, so k / (n + 1) >= 1 - alpha always holds for the number
+    alpha is read as."""
+    value = _read_alpha(a)
+    num = (n + 1) * (value.denominator - value.numerator)
+    return -(-num // value.denominator)
 
 
 def _min_n(a):
-    """The smallest n whose rank _rank(n, a) exists among n scores."""
-    n = max(1, int(np.floor((1.0 - a) / a)) - 1)
-    while _rank(n, a) > n:
-        n += 1
-    return n
+    """The smallest n whose rank _rank(n, a) exists among n scores.
+    k <= n means (n + 1)(1 - alpha) <= n, that is n >= (1 - alpha) /
+    alpha; computed exactly since 0.7.0 (before, by a search)."""
+    value = _read_alpha(a)
+    return max(1, math.ceil((1 - value) / value))
 
 
 def conformal_quantile(scores, alpha: float = 0.1) -> float:
@@ -94,9 +128,9 @@ def conformal_quantile(scores, alpha: float = 0.1) -> float:
     Returns q such that |new error| <= q with probability >= 1-alpha.
     Refuses when n is too small for the level: the rank
     ceil((n+1)(1-alpha)) must exist among n scores, which needs
-    n >= (1-alpha)/alpha. A decimal alpha of up to 8 significant
-    digits is read exactly, so alpha=0.7 means 7/10 and n=9 gives k=3
-    (see `_rank`).
+    n >= (1-alpha)/alpha. alpha is read as an exact number (see
+    `_read_alpha`; a short decimal since 0.5.0, any alpha since
+    0.7.0), so alpha=0.7 means 7/10 and n=9 gives k=3.
     """
     s = np.asarray(scores, dtype=float).ravel()
     if s.size < 1 or not np.all(np.isfinite(s)) or np.any(s < 0.0):
