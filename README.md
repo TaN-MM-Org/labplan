@@ -20,11 +20,13 @@ questions:
   bars? Are the readings consistent with the model and their stated
   errors? Do the residuals wander in a pattern the model misses? What
   is the error bar of anything computed from them, such as a predicted
-  reading? And, reading the calibration backwards, which setting
-  produced a new reading, and how sure is that? What if the settings
-  themselves have error bars, as when a sensor is calibrated against
-  a reference instrument? The readings can come straight from an
-  instrument's exported text table.
+  reading, also when it is far from a straight line in them? And,
+  reading the calibration backwards, which setting produced a new
+  reading, and how sure is that? What if the settings themselves have
+  error bars, as when a sensor is calibrated against a reference
+  instrument, perhaps with errors that move together with those of
+  the readings? The readings can come straight from an instrument's
+  exported text table.
 - **If the model may be wrong:** how wide a band around the
   prediction still covers new measurements at a chosen rate?
 - **Later:** can anyone trace what was fitted, to exactly which data,
@@ -117,6 +119,15 @@ explains why.
   settings are not known exactly either, for example because they
   are the readings of a reference instrument. The fit then also
   estimates the true settings, each within its own error bar.
+- **Correlation** (of two errors): a number from -1 to 1 that says
+  how much two errors tend to move together. 0 means they are
+  independent; 0.5 means that when one error is positive, the other
+  tends to be positive too.
+- **Monte Carlo propagation**: finding the error bar of a computed
+  number by drawing many random sets of parameters with the right
+  error bars and correlations, computing the number for each set, and
+  looking at how the results spread. It needs no straight-line
+  approximation, only enough draws.
 - **Conformal prediction** -- a way to put a band around predictions
   from held-out data alone, without trusting the model. The
   **calibration scores** are the absolute errors
@@ -154,7 +165,7 @@ are described in [Tutorials](#tutorials) below.
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with labplan 0.6.0 (a test checks this). The model, the
+printed with labplan 0.7.0 (a test checks this). The model, the
 numbers and the noise are illustrative; the random numbers come from
 fixed seeds, so the output is repeatable.
 
@@ -833,6 +844,91 @@ bound on the D-efficiency. The output of `design_weights` goes into
 in all: 62 here, against 3 x 21 = 63 for the repeated three-point
 design of example 9.
 
+### 17. Errors of settings and readings that move together
+
+```python
+import numpy as np
+from labplan import Model, fit_xy, goodness_of_fit
+
+# Pearson's data with York's weights, as in example 15, now with the
+# error of each setting correlated with the error of its reading
+# (correlation 0.5 for every point; illustrative).
+x = np.array([0.0, 0.9, 1.8, 2.6, 3.3, 4.4, 5.2, 6.1, 6.5, 7.4])
+y = np.array([5.9, 5.4, 4.4, 4.6, 3.5, 3.7, 2.8, 2.8, 2.4, 1.5])
+wx = np.array([1000, 1000, 500, 800, 200, 80, 60, 20, 1.8, 1.0])
+wy = np.array([1, 1.8, 4, 8, 20, 20, 70, 70, 100, 500.0])
+
+line = Model("line", lambda th, x: th[0] + th[1] * x[:, 0],
+             param_names=("intercept", "slope"),
+             reference="straight line; Pearson-York test data")
+for r in (0.0, 0.5):
+    res = fit_xy(line, x, y, theta0=[5.0, -0.5], sigmas=1 / np.sqrt(wy),
+                 x_sigmas=1 / np.sqrt(wx), xy_correlation=r)
+    g = goodness_of_fit(res)
+    print(f"r = {r}: slope = {res.values['slope']:.5f} "
+          f"+/- {res.sigma['slope']:.5f}, intercept = "
+          f"{res.values['intercept']:.5f}, chi2 = {g['chi2']:.2f}")
+```
+
+```
+r = 0.0: slope = -0.48053 +/- 0.05799, intercept = 5.47991, chi2 = 11.87
+r = 0.5: slope = -0.49288 +/- 0.06297, intercept = 5.53437, chi2 = 9.57
+```
+
+`xy_correlation` (new in 0.7.0) is the correlation between the error
+of each setting and the error of its reading. It arises, for example,
+when both coordinates are computed from one shared measured number,
+such as two signals divided by the same reference signal. It is one
+number for all measurements, one per measurement, or one per setting
+column and measurement; 0 (the default) gives the fit of example 15
+exactly. For a straight line the result is York's line with his
+correlation `r_i`: the tests run York's iteration with correlation
+(D. York et al., Am. J. Phys. 72, 367 (2004), in the form listed by
+C. M. Wehr and S. R. Saleska, Biogeosciences 14, 17 (2017), Appendix
+A) on these data and agree with the line above to 3e-11 of an error
+bar. Inside, the fit subtracts `c x` from each reading, with
+`c = r sigma_y / sigma_x`; that removes the correlation exactly
+(the error of `y - c x` is independent of the error of `x`), so the
+fit is otherwise the one of example 15.
+
+### 18. Error bars without the straight-line approximation
+
+```python
+import numpy as np
+from labplan import propagate, propagate_mc
+
+# An amplifier gain measured as 20 dB +/- 3 dB (illustrative numbers),
+# and the same gain as a plain voltage ratio, 10^(g / 20).
+ratio = lambda th: 10 ** (th[0] / 20)
+
+first = propagate(ratio, [20.0], [[3.0 ** 2]])
+mc = propagate_mc(ratio, [20.0], [[3.0 ** 2]])
+print(f"first order: {first['value']:.2f} +/- {first['sigma']:.2f}")
+print(f"Monte Carlo: {mc['value']:.2f} +/- {mc['sigma']:.2f}, "
+      f"95 % interval {mc['low']:.2f} to {mc['high']:.2f}")
+print(f"({mc['n_draws']} draws, seed {mc['seed']})")
+```
+
+```
+first order: 10.00 +/- 3.45
+Monte Carlo: 10.61 +/- 3.78, 95 % interval 5.08 to 19.68
+(100000 draws, seed 0)
+```
+
+`propagate_mc` (new in 0.7.0) takes the same `func`, `theta` and
+`cov` as `propagate`, draws 100000 parameter sets (by default) from
+the Gaussian distribution with that mean and covariance, and reports
+the mean, the standard deviation and the interval that holds the
+computed number with 95 % probability, 2.5 % on each side (the Monte
+Carlo method of JCGM 101:2008, the first supplement to the GUM). The
+ratio here is a lognormal quantity, so the exact answers are known:
+mean 10.61, standard deviation 3.78 and interval 5.08 to 19.68. The
+first-order error bar of `propagate`, 3.45, is 8.6 % too small and
+says nothing about the lopsided interval. The value has a random
+error of about `sigma / sqrt(n_draws)` (0.012 here). `seed=0` (the
+default) makes the result repeatable; `seed=None` draws fresh random
+numbers.
+
 ## Tutorials
 
 Three complete scripts in [`examples/`](examples/) go from raw data
@@ -935,9 +1031,15 @@ reference's error bar, and fitting with it, is what fixes them.
   times. Since 0.4.0, when that fallback step reaches or crosses zero
   and the model returns values that are not finite there (a time
   constant of 1e-9 s, say), it is divided by 10 until they are finite,
-  at most 8 times, and then checked the same way. `rel_step` (default
-  1e-6) must be a positive number. `Model.n_params` counts the
-  parameters.
+  at most 8 times, and then checked the same way. Since 0.7.0, when
+  the step finally used changes the predictions so little that
+  rounding could make up more than 1e-4 of the slopes (a detuning of
+  0 Hz in a model whose times are in seconds, say), the step is
+  multiplied by 10, at most 16 times, until it changes them by more
+  than 1e-8 of their size; those slopes are used if a step 10 times
+  larger again gives the same slopes within 1e-6, and the earlier
+  slopes are kept otherwise. `rel_step` (default 1e-6) must be a
+  positive number. `Model.n_params` counts the parameters.
 
 **Planning**
 
@@ -1028,6 +1130,17 @@ reference's error bar, and fitting with it, is what fixes them.
   0.3.0 a covariance that is not positive semidefinite (one that
   would give some combination of parameters a negative variance) is
   refused.
+- `propagate_mc(func, theta, cov, n_draws=100000, seed=0, level=0.95)`
+  (new in 0.7.0): the same question answered without the straight-line
+  approximation, by the Monte Carlo method of JCGM 101:2008. It draws
+  `n_draws` parameter vectors from the Gaussian distribution with mean
+  `theta` and covariance `cov`, calls `func` on each, and returns
+  `value` (the mean), `sigma` (the standard deviation), `cov`, and
+  `low` and `high`, the `(1 - level)/2` and `(1 + level)/2` quantiles
+  of the results (an interval with equal probability outside it on
+  each side), with `n_draws`, `seed` and `level`. The value has a
+  random error of about `sigma / sqrt(n_draws)`. The same seed gives
+  the same numbers. See example 18.
 
 **Fitting**
 
@@ -1051,10 +1164,11 @@ reference's error bar, and fitting with it, is what fixes them.
   `model_name`, `reference`, `units` (the model's note),
   `data_digest` (the sha256 of the settings, readings and reading
   errors) and, since 0.5.0, `x_adjusted` (the fitted true settings
-  of `fit_xy`; `None` for `fit`).
+  of `fit_xy`; `None` for `fit`) and, since 0.7.0, `xy_correlation`
+  (the correlations a `fit_xy` was given; `None` otherwise).
 - `fit_xy(model, x, y, theta0, sigmas, x_sigmas, max_iter=200,
-  tol=1e-12)` (new in 0.5.0): the fit when the settings have error
-  bars too. `x_sigmas` is one number, one per measurement, or an
+  tol=1e-12, xy_correlation=None)` (new in 0.5.0): the fit when the
+  settings have error bars too. `x_sigmas` is one number, one per measurement, or an
   `(n, d)` array; 0 marks an exact setting. It minimizes the sum of
   the squared reading residuals and the squared setting adjustments,
   each in units of its error bar, over the parameters and the true
@@ -1070,8 +1184,18 @@ reference's error bar, and fitting with it, is what fixes them.
   setting; where that step is zero or does not change the predictions
   by more than 1e-8 of their size, 1e-6 of the larger of the setting
   and the largest setting in its column (since 0.6.0; before, the
-  second step was used for every setting, see Corrections). See
-  example 15 and the third tutorial.
+  second step was used for every setting, see Corrections). Since
+  0.7.0 that second step is checked against a step 10 times smaller
+  and reduced while the two disagree, as `Model.numeric_jacobian`
+  does for a parameter at zero. `xy_correlation` (new in 0.7.0) is
+  the correlation between the error of each setting and the error of
+  its reading: one number, one per measurement, or an `(n, d)` array,
+  0 where a setting is exact; the squares of one measurement's
+  correlations must add up to less than 1 (the errors of different
+  settings stay independent of each other). The fit then minimizes
+  the sum with the full covariance of each measurement's errors; for
+  a straight line that is York's line with his correlation `r_i`.
+  See examples 15 and 17 and the third tutorial.
 - `goodness_of_fit(result)` or `goodness_of_fit(chi2=..., dof=...)`
   (new in 0.3.0): the chi-squared test. It returns `chi2`, `dof`,
   `reduced_chi2` (chi2 / dof), `p_value` (probability of a chi2 at
@@ -1124,7 +1248,13 @@ reference's error bar, and fitting with it, is what fixes them.
   that `alpha=0.7` means exactly 7/10 (see Corrections below). Since
   0.5.0 a decimal of up to 8 significant digits (or a value that
   differs from one only by floating-point rounding, such as
-  `1 - 0.9`) is read exactly at every `n`.
+  `1 - 0.9`) is read exactly at every `n`. Since 0.7.0 every alpha
+  is read as an exact number and `k` is computed in whole numbers: a
+  decimal of up to 8 significant digits as before; otherwise a
+  fraction with a denominator of at most 10^6, if alpha is that
+  fraction up to rounding (`1/3`, `2/7`); otherwise the decimal that
+  Python prints for it (`repr`), which is the number as typed for a
+  decimal of up to 15 significant digits (`0.099999999999`).
 
 **Records**
 
@@ -1214,7 +1344,10 @@ its inputs and conventions.
   between the two kinds of error is unknown), `x_sigmas` of the wrong
   shape, negative or not finite, or a model whose prediction for one
   measurement changes when the settings of another one change (it is
-  checked once, by moving one row's settings); and it refuses
+  checked once, by moving one row's settings); since 0.7.0 also an
+  `xy_correlation` of the wrong shape, not finite, not 0 where a
+  setting is exact, or with squares that add up to 1 or more for one
+  measurement (such errors have no valid covariance); and it refuses
   everything `fit` refuses with `sigmas`;
 - `runs_test` gets residuals that are not finite or not a 1-D array,
   an `order` of the wrong length, fewer than 2 nonzero residuals, or
@@ -1229,6 +1362,13 @@ its inputs and conventions.
   semidefinite (since 0.3.0), or a `func` that cannot be
   called, returns non-finite values, or returns an array with more
   than one dimension (a table instead of a list of numbers);
+- `propagate_mc` (new in 0.7.0) refuses what `propagate` refuses, an
+  `n_draws` that is not a whole number or that leaves fewer than 10
+  draws beyond each end of the interval (fewer than
+  `20 / (1 - level)`, so 400 for 0.95), a `level` outside 0 to 1, a
+  `seed` that is not a whole number `>= 0` or `None`, and a `func`
+  that is not finite at some draw (the message gives the parameters)
+  or returns a different number of values there;
 - `audit_record` gets an operator or note that is not text, or
   `report_text` gets something that is not an audit record;
 - `goodness_of_fit` gets a fit made without `sigmas` (it has no
@@ -1251,7 +1391,7 @@ its inputs and conventions.
 
 ## How the results are checked
 
-145 automated tests run on every push and pull request, on Python 3.9,
+170 automated tests run on every push and pull request, on Python 3.9,
 3.10, 3.11, 3.12, 3.13 and 3.14, and once more on Python 3.9 with the
 oldest NumPy the package allows (1.22.0, with pytest 7.0.0). Since
 0.5.0 the source distribution includes the files the tests read
@@ -1603,6 +1743,53 @@ from an earlier run. What the tests assert:
   output shown below it (16 tests; before 0.6.0 only the tutorials
   were checked this way).
 
+**Added in 0.7.0**
+
+- `fit_xy` with `xy_correlation` on Pearson's data with York's
+  weights and correlations 0.5, -0.7 and a spread from -0.9 to 0.9:
+  slope and intercept equal York's iteration with correlation,
+  written out in the test from the algorithm listed by Wehr and
+  Saleska (2017, Appendix A), to 1e-6 of an error bar (measured:
+  2e-9 at most); the error bars equal York's at the adjusted points
+  (relative 1e-7; measured 6e-10), and chi2 equals the closed form
+  `sum (y - a - b x)^2 / (sigma_y^2 + b^2 sigma_x^2 - 2 b r sigma_x
+  sigma_y)` (relative 1e-10; measured 5e-15). For a plane in two
+  settings, each with its own correlation, chi2 and the fitted
+  settings equal the closed form worked out by hand in the test. For
+  an exponential decay with errors in the times, the gradient of the
+  correlated sum, computed in the test with exact derivatives and the
+  inverse 2 x 2 covariance of each measurement, is zero at the
+  solution (below 1e-5 of an error bar; measured 6e-10), and the
+  covariance equals the effective-variance formula with the
+  correlation term (measured 1.7e-9). In 200 seeded data sets with
+  correlation 0.6 the scatter of the slope is 1.046 times its error
+  bar and chi2 averages 12.83 for 13 degrees of freedom; leaving the
+  correlation out gives 5.59. Correlation 0 gives the earlier fit
+  exactly, digest included, and every refusal fires.
+- `propagate_mc`: for linear functions the result is the linear map
+  of the result for the parameters themselves (relative 1e-12) and
+  agrees with `propagate` within the random error; for the product of
+  two correlated Gaussian parameters the mean and variance are the
+  exact ones from the moments of a Gaussian, and for `exp` of a
+  Gaussian the mean, standard deviation and both interval ends are
+  the exact lognormal ones, each within 4.5 standard errors of the
+  draws (measured: at most 1.25). A parameter with zero variance
+  stays fixed, the same seed repeats the result, and every refusal
+  fires.
+- The three corrections below, each with a test that fails on 0.6.0:
+  the conformal rank for long decimals and fractions (against exact
+  rational arithmetic, for 400 random decimals of 9 to 15 digits at
+  `n` up to 1e7, and for 1/3 at `n` = 600000001); the slopes of a
+  fringe `A cos(2 pi df t + 0.3) + 0.5` at `df = 0` Hz with times in
+  seconds over 1 ms, 10 us, 0.1 us and 1 ns (slopes within 1e-6 of
+  the exact ones, measured 1e-8; planned and fitted covariances
+  within 1e-6, measured 6e-9); and `fit_xy` for a saturating response
+  with settings at zero (gradient below 1e-5 of an error bar,
+  measured 3e-9). A parameter whose first derivative is really zero
+  (it enters as `th^3`) keeps its zero slopes and is still refused.
+- README examples 17 and 18 print exactly what is shown (18 example
+  tests in all).
+
 Every refusal listed in "When it refuses, and why" is checked to
 fire, including a fit that does not converge within `max_iter` steps
 (a `RuntimeError`) and a parameter that no reading responds to (an
@@ -1612,6 +1799,49 @@ dictionary can be hashed (used as a dictionary key or in a set), and
 equal models hash equally.
 
 ## Corrections in earlier versions
+
+**0.7.0 fixed three wrong answers.**
+
+- *Slopes for a parameter at zero whose natural size is large.* For
+  a parameter at zero the numerical slopes use a step of 1e-9 in the
+  parameter's own units. Since 0.2.0 that step was checked against
+  smaller ones, but never against larger ones. For a detuning `df`
+  of 0 Hz in a fringe `A cos(2 pi df t + 0.3) + 0.5` with times in
+  seconds, a step of 1e-9 Hz moves the phase by about 6e-14 over
+  10 us, close to rounding. Over 1 ms the slope was 1e-4 wrong and
+  over 10 us 1.2 % wrong (planned error bar on `df` 709.16 Hz instead
+  of 710.85 Hz). Over 0.1 us the slope was rounding only: the plan
+  was refused as not identifiable, and `fit` returned an error bar on
+  `df` of 42751 Hz instead of 71085 Hz (40 % too small) and one on `A`
+  of 0.00190 instead of 0.00321. 0.7.0 enlarges the step in such cases
+  (see `Model.numeric_jacobian` above) and gives the exact values to
+  1e-8. Slopes whose rounding error stays below 1e-4 are unchanged,
+  bit for bit (the tests of earlier versions check this), and so is
+  every README example and tutorial.
+- *`fit_xy` slopes at settings near zero.* Where a setting is at or
+  near zero, the slope `df/dx` used a step of 1e-6 of the largest
+  setting in its column, unchecked. For a response
+  `a + b x / (x + 0.01)` with settings from 0 to 1000 that step is a
+  tenth of the bend. On the data of the new test 0.6.0 gave
+  a = 1.02852766 +/- 0.01717228 and b = 1.97405205 +/- 0.01803276,
+  chi2 = 12.816825; 0.7.0 gives a = 1.02850360 +/- 0.01714371 and
+  b = 1.97407688 +/- 0.01800382, chi2 = 12.816822, at which the
+  gradient of the minimized sum, computed with exact derivatives, is
+  zero to 3e-9 of an error bar (0.6.0: 0.003). The values moved by
+  0.0014 of an error bar and the old error bars were 0.16 % and
+  0.17 % too large.
+  The step is now checked against smaller ones, as for parameters.
+- *The conformal rank for an alpha with more than 8 significant
+  digits.* Such an alpha used the rule of 0.4.0, which read
+  `alpha = 0.099999999999` as 0.1: for `n = 9` it returned `k = 9`
+  and `coverage_exact(9, 0.099999999999)` = 0.9, below the promised
+  1 - alpha = 0.900000000001 (and the same at every `n + 1` that is a
+  multiple of 10). For `alpha = 1/3` the rank was one too small from
+  `n` of about 5e8. Since 0.7.0 every alpha is read as an exact
+  number (see "When the model may be wrong" above), so `n = 9` is
+  refused for that alpha and `coverage_exact(19, 0.099999999999)` is
+  0.95. Decimals of up to 8 digits, 1/3, 2/3 and 1/7 give the same
+  rank as before at every `n` up to 2000 (a test checks this).
 
 **0.6.0 fixed one wrong answer.**
 
@@ -1790,23 +2020,40 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   errors. For a model that is not a straight-line function of its
   parameters, they come from a linear approximation around the
   guessed or fitted parameters and are approximate; the planned error
-  bars also depend on how good your guess is.
+  bars also depend on how good your guess is. Errors that are
+  correlated from one reading to the next (a drifting baseline shared
+  by all readings, say) are not supported: `sigmas` is one error bar
+  per reading, not a covariance matrix. Allowing one would change the
+  rules for `sigmas` in every function that takes it (planning,
+  design, fitting, files), and is left for a later release. Only
+  `fit_xy` (since 0.7.0) takes a correlation, between the error of a
+  setting and that of its own reading.
 - Unless you give `jac`, slopes are computed by finite differences,
   not exact derivatives. For a parameter at zero the step is found by
-  shrinking a 1e-9 step until two successive steps agree; this
-  assumes the model is smooth in that parameter. It checks only
-  shrinking, so a 1e-9 step that is too small for a parameter whose
-  natural size is much larger than 1 (a zero offset written in
-  nanoseconds when the times are seconds) is not enlarged; write such
-  a parameter in units where its natural size is near 1, or give
-  `jac`.
+  shrinking a 1e-9 step until two successive steps agree, and (since
+  0.7.0) by enlarging it when rounding swamps it; both assume the
+  model is smooth in that parameter. A step whose rounding error is
+  below 1e-4 of the slopes is not enlarged (that keeps earlier
+  results unchanged), so such slopes can carry an error of up to
+  about that size, and an enlarged step is used only when a step 10
+  times larger agrees with it. When in doubt, write the parameter in
+  units where its natural size is near 1, or give `jac`.
 - `labplan` cannot check a hand-written `jac`; a wrong one gives wrong
   error bars. Compare it once with `Model.numeric_jacobian`, as in
   example 10.
 - `propagate` is first order: exact for straight-line functions of
   the parameters, an approximation otherwise that is good when the
   function is close to a straight line within about one error bar.
-  It refuses a covariance that is not positive semidefinite, but it
+  `propagate_mc` (since 0.7.0) needs no such approximation, but it
+  assumes that the parameters are Gaussian with the given covariance
+  (for a fit of a model that is not a straight line in its
+  parameters, that is itself the first-order description), and its
+  answers carry a random error that shrinks only like
+  `1 / sqrt(n_draws)`. It calls `func` once per draw, which is slow
+  for an expensive `func`. A quantity whose mean does not exist in
+  theory (`1 / a` when `a` can reach zero) still gets a finite
+  average from the draws; check that the interval makes sense. Both
+  refuse a covariance that is not positive semidefinite, but they
   cannot tell when a valid one was rounded: copy covariances at full
   precision.
 - `goodness_of_fit` assumes independent Gaussian reading errors of the
@@ -1832,7 +2079,10 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   determinant only (the joint uncertainty of all parameters). The
   design that is best for the error bar of one parameter, or of one
   predicted reading, can be different; check such error bars with
-  `information` or `propagate`. For a model that is not a
+  `information` or `propagate`. Searching for that design is not
+  included: it can need fewer settings than parameters, where the
+  information matrix cannot be inverted and the search and its proof
+  of optimality work differently. For a model that is not a
   straight-line function of its parameters the answer depends on the
   guessed parameters, as for `information`. "Best" means best among
   the candidates you give: the best setting can lie between two
@@ -1849,25 +2099,31 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 - `inverse_predict` needs settings that are one number per
   measurement and a bracket in which the model reaches the reading
   exactly once. It scans the bracket at `n_scan` points, so two
-  crossings closer together than the scan spacing are not seen. Its
+  crossings closer together than the scan spacing are not seen (no
+  scan can rule them out without knowing how fast the model can turn
+  back; narrow the bracket or raise `n_scan`). Its
   error bar is first order, like `propagate`; it refuses when the
   slope changes by more than 10 % within one error bar, and below that
   the error bar can still be a few percent too small where the curve
   bends (in the tests the simulated scatter was 1.014 times the error
   bar at a slope change of 10.5 %).
-- `fit_xy` assumes independent Gaussian errors in every reading and
-  every setting, with no correlation between the error of a setting
-  and that of its reading (York's method allows one; `fit_xy` does
-  not). Its error bars are first order, like those of `fit`, and its
-  chi2 follows the chi-squared distribution only approximately for a
+- `fit_xy` assumes Gaussian errors in every reading and every
+  setting, independent from one measurement to the next. Since 0.7.0
+  the error of a setting may be correlated with that of its own
+  reading (`xy_correlation`), but the errors of two settings of one
+  measurement must stay independent of each other (a full covariance
+  per measurement is not taken). Its error bars are first order, like
+  those of `fit`, and its chi2 follows the chi-squared distribution only approximately for a
   model that is not a straight line in its parameters and settings.
   With large setting errors on a curved model, the fitted true
   settings can be biased; check with simulation when the setting
   errors are not small next to the curvature. Its slopes with respect
   to the settings are finite differences with a step of 1e-6 of each
   setting; a setting at or very near zero gets 1e-6 of the largest
-  setting in its column instead, which can be too coarse for a model
-  that bends sharply near zero. Each measurement's prediction must
+  setting in its column instead, checked against smaller steps since
+  0.7.0. That check assumes the model is smooth there; for a model
+  with a kink at zero (such as `abs(x)`) no finite difference is
+  right, and `fit_xy` cannot tell. Each measurement's prediction must
   depend only on its own row of settings. The work grows with the
   number of measurements times the number of setting
   columns (there is one unknown per uncertain setting).
@@ -1884,12 +2140,15 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   calibration data to be exchangeable with the new measurement:
   calibration data from last month's instrument state do not certify
   next month's drift. The tighter bound `1 - alpha + 1/(n + 1)`
-  assumes scores without ties. A decimal `alpha` of up to 8
-  significant digits is read exactly (since 0.5.0). Any other alpha
-  (1/3, or 0.099999999999) is read to about 9 significant digits, as
-  before: a product `(n + 1)(1 - alpha)` within 1e-9 (relative) above
-  an integer is taken to be that integer, which for such alphas can
-  still give a rank one too small when `n` is in the millions.
+  assumes scores without ties. Since 0.7.0 every `alpha` is read as
+  an exact number and the rank is exact for it. But a floating-point
+  number cannot say which number you meant: `1/3` and the decimal
+  `0.3333333333333333` are the same float, and `labplan` reads it as
+  1/3 (a fraction with a denominator of at most 10^6 comes before a
+  long decimal). If you meant the long decimal, the rank for it can be
+  one larger at some `n`; the coverage for 1/3 then still holds, but
+  falls short of your decimal by less than 1e-16 (and by at most
+  1e-15 for any alpha read as a fraction).
 - `save_measurements_csv` and `load_measurements_csv` use `labplan`'s
   own CSV layout (`x1, ..., y, sigma`). Other delimited text tables
   are read with `load_columns` (since 0.3.0), which needs one header
@@ -1940,11 +2199,23 @@ reference values are from C. A. Cantrell, "Technical Note: Review of
 methods for linear least-squares fitting of data and application to
 atmospheric chemistry problems", Atmos. Chem. Phys. 8, 5477-5487
 (2008) (https://acp.copernicus.org/articles/8/5477/2008/), Tables 1
-and 2.
+and 2. York's equations with a correlation between the errors of `x`
+and `y`, used in the tests of `xy_correlation`, are taken from the
+algorithm listed in C. M. Wehr and S. R. Saleska, "The long-solved
+problem of the best-fit straight line: application to isotopic
+mixing lines", Biogeosciences 14, 17-29 (2017), Appendix A
+(https://bg.copernicus.org/articles/14/17/2017/), which cites York et
+al. (2004), eqs. (13).
 First-order propagation of uncertainty with
 covariances is the "law of propagation of uncertainty" of JCGM
 100:2008, Evaluation of measurement data -- Guide to the expression
-of uncertainty in measurement (sections 5.1.2 and 5.2). Split
+of uncertainty in measurement (sections 5.1.2 and 5.2). The Monte
+Carlo method of `propagate_mc` is that of JCGM 101:2008, Evaluation
+of measurement data -- Supplement 1 to the "Guide to the expression
+of uncertainty in measurement" -- Propagation of distributions using
+a Monte Carlo method: a multivariate Gaussian input (clause 6.4.8)
+and the probabilistically symmetric coverage interval between the
+(1 - p)/2 and (1 + p)/2 quantiles (clauses 3.15 and 5.3.3). Split
 conformal prediction follows Vovk, Gammerman and Shafer, Algorithmic
 Learning in a Random World, Springer (2005); Lei et al., J. Am. Stat.
 Assoc. 113, 1094 (2018); and Angelopoulos and Bates,

@@ -5,6 +5,165 @@ against a closed form, an exact identity, or seeded simulation
 against an exact formula; the release notes on GitHub carry the full
 anchor lists.
 
+## 0.7.0 (2026-11-25)
+
+Two new features close limits that earlier versions listed: `fit_xy`
+takes a correlation between the error of a setting and that of its
+reading, and `propagate_mc` propagates a covariance without the
+straight-line approximation. Three wrong answers are fixed, one of
+them an error bar 40 % too small. Every test of earlier versions
+still passes (one was changed on purpose, see Changed), and the
+printed output of README examples 1 to 16 and of the scripts in
+`examples/` is unchanged.
+
+### Added
+
+- `fit_xy(..., xy_correlation=None)`: the correlation between the
+  error of each setting and the error of its reading, one number, one
+  per measurement or an `(n, d)` array. The fit minimizes the sum with
+  the full covariance of each measurement's errors. It is done by an
+  exact change of variables: with `c = r sigma_y / sigma_x`, the error
+  of `y - c x` is independent of the error of `x` and has size
+  `sigma_y sqrt(1 - r^2)`, so the solver of 0.5.0 is used unchanged.
+  For a straight line the result is York's line with his correlation
+  `r_i` (D. York et al., Am. J. Phys. 72, 367-375 (2004), eqs. (13),
+  as listed by C. M. Wehr and S. R. Saleska, Biogeosciences 14, 17-29
+  (2017), Appendix A). The new field `FitResult.xy_correlation` holds
+  the correlations, the data digest covers them, and the audit record
+  says "correlated with each other" in `fit_method`. Correlation 0
+  gives exactly the fit without it, digest included. README example
+  17.
+- `propagate_mc(func, theta, cov, n_draws=100000, seed=0, level=0.95)`:
+  the Monte Carlo method of JCGM 101:2008 (Supplement 1 to the GUM)
+  with a multivariate Gaussian input (its clause 6.4.8). Returns the
+  mean, the standard deviation, the covariance and the interval
+  between the `(1 - level)/2` and `(1 + level)/2` quantiles (its
+  clauses 3.15 and 5.3.3). For a gain of 20 +/- 3 dB turned into a
+  voltage ratio it gives 10.61 +/- 3.78 and 5.08 to 19.68, the exact
+  lognormal values to the printed digits, where `propagate` gives
+  10.00 +/- 3.45. 100000 draws of a cheap function take about 0.1 s.
+  README example 18.
+- `labplan.fit.data_digest(..., xy_correlation=None)`, a keyword used
+  by `fit_xy`; digests without it are unchanged.
+
+### Changed
+
+- `Model.numeric_jacobian`: when the step finally used changes the
+  predictions so little that rounding could make up more than 1e-4 of
+  the slopes, the step is now multiplied by 10 (at most 16 times)
+  until it changes them by more than 1e-8 of their size, and those
+  slopes are used if a step 10 times larger gives the same slopes
+  within 1e-6. Slopes with less rounding than that are unchanged, bit
+  for bit. See Fixed.
+- `fit_xy`: the fallback step for `df/dx` at settings near zero is now
+  checked against smaller steps (see Fixed). On data with a setting at
+  zero this costs one more pair of model calls per step: the
+  Pearson-York fit of README example 15 took 3.6 ms instead of 3.1 ms
+  (median of 7 runs of 20, on a shared 2-CPU machine), with the same
+  result.
+- Conformal rank: every alpha is now read as an exact number (see
+  Fixed). In `tests/test_fixes_050.py`, the test
+  `test_conformal_rank_unchanged_where_it_was_right` no longer expects
+  the 0.4.0 rank for `alpha = 0.099999999999` and `0.0999999999`;
+  it now checks the exact rank there, which is never below the old
+  one and differs from it at 200 of the 2000 values of `n`. All other
+  alphas of that test keep their check.
+- `propagate` and `propagate_mc` share their input checks; the
+  messages of `propagate` are unchanged.
+- Version 0.7.0 in `pyproject.toml`, `labplan.__version__` and
+  `CITATION.cff` (dated 2026-11-25). README: the new functions,
+  refusals, tests, corrections, limits and sources, word guide entries
+  for correlation and Monte Carlo propagation, and examples 17 and 18.
+  The printed output of README examples 1 to 16 and of the scripts in
+  `examples/` is unchanged (apart from the version and the timestamp
+  in the record that example 01 prints).
+
+### Fixed
+
+- Slopes for a parameter at zero whose natural size is large were
+  swamped by rounding. For a fringe `A cos(2 pi df t + 0.3) + 0.5` at
+  `df = 0` Hz with times in seconds (41 samples, reading error 0.01),
+  the fallback step 1e-9 Hz hardly moves the phase. Before: over 1 ms
+  the slope of `df` was 1.1e-4 wrong; over 10 us 1.2 % wrong, with a
+  planned error bar on `df` of 709.16 Hz instead of 710.85 Hz; over
+  0.1 us the slope was rounding only, `information` reported the plan
+  not identifiable, and `fit` returned an error bar on `df` of 42751 Hz
+  instead of 71085 Hz (40 % too small) and on `A` of 0.00190 instead
+  of 0.00321. After: slopes within 1e-8 of the exact ones and the
+  exact error bars at all four spans (test
+  `test_zero_detuning_in_hertz_with_times_in_seconds`).
+- `fit_xy` used the fallback step for `df/dx` (1e-6 of the largest
+  setting in the column) unchecked at settings near zero. For
+  `a + b x / (x + 0.01)` with settings from 0 to 1000 (the data of the
+  new test) that step is a tenth of the bend. Before:
+  a = 1.02852766 +/- 0.01717228, b = 1.97405205 +/- 0.01803276,
+  chi2 = 12.816825, where the gradient of the minimized sum, computed
+  with exact derivatives, is 0.003 of an error bar. After:
+  a = 1.02850360 +/- 0.01714371, b = 1.97407688 +/- 0.01800382,
+  chi2 = 12.816822, gradient 3e-9 (test
+  `test_fit_xy_slopes_near_zero_settings`).
+- The conformal rank of an alpha with more than 8 significant digits
+  used the 1e-9 tolerance of 0.4.0, which read 0.099999999999 as 0.1.
+  Before: `coverage_exact(9, 0.099999999999)` = 0.9, below the
+  promised 1 - alpha = 0.900000000001, and the same at every `n + 1`
+  that is a multiple of 10; for alpha = 1/3 the rank was one too small
+  from `n` of about 5e8 (`coverage_exact(600000001, 1/3)` =
+  0.6666666661, below 2/3). After: alpha is read as a decimal of up to
+  8 digits as before, else as a fraction with a denominator of at most
+  10^6 (1/3), else as the decimal Python prints for it, and the rank
+  is computed in whole numbers; `n = 9` is refused for 0.099999999999,
+  `coverage_exact(19, 0.099999999999)` = 0.95 and
+  `coverage_exact(600000001, 1/3)` = 0.6666666678 (tests
+  `test_long_decimal_alpha_is_read_as_typed`,
+  `test_random_long_decimals_get_the_exact_rank`,
+  `test_fractions_are_read_exactly_at_large_n`). The smallest `n`
+  named in a refusal is now computed exactly instead of by a search.
+
+### Not included
+
+- A covariance matrix for the readings (errors correlated from one
+  reading to the next). `sigmas` stays one error bar per reading:
+  allowing a matrix changes the rules for `sigmas` in planning,
+  design, fitting and the measurement files at once, and is left for
+  a release of its own.
+- A full covariance between the settings of one measurement in
+  `fit_xy`: only the correlation of each setting with its own reading
+  is taken.
+- Designs that are best for one parameter or one predicted reading
+  (instead of the determinant). Such a design can use fewer settings
+  than parameters, where the information matrix cannot be inverted,
+  so the search and its proof of optimality need a different method.
+- `inverse_predict` still cannot see two crossings closer together
+  than its scan spacing: no scan can rule them out without a bound on
+  how fast the model can turn back.
+- Rows with line breaks inside quoted cells, and spreadsheet files
+  (`.xlsx`), in `load_columns`. Instruments export one row per line,
+  and reading `.xlsx` needs a dependency or a reader that could not be
+  checked against an independent one here.
+- `propagate_mc` calls `func` once per draw; there is no option for a
+  `func` that takes all draws at once.
+
+### Checks (tests)
+
+- 25 new tests (170 in all): `tests/test_fixes_070.py` (9; all but the
+  one that checks an unchanged case fail on 0.6.0),
+  `tests/test_fitxy_correlated.py` (9: York's iteration with
+  correlation written out in the test, slope and intercept within
+  1e-6 of an error bar, measured 2e-9; closed-form chi2 and fitted
+  settings for one and two setting columns, measured 5e-15 and 3e-10;
+  stationarity and covariance of a nonlinear fit with exact
+  derivatives, measured 6e-10 and 1.7e-9; 200 seeded data sets with
+  correlated errors, slope scatter 1.046 times the error bar, mean
+  chi2 12.83 for 13; correlation 0 equal to the plain fit; every
+  refusal) and `tests/test_propagate_mc.py` (5: linear functions, the
+  exact mean and variance of a product of correlated Gaussians, the
+  exact lognormal mean, standard deviation and quantiles, all within
+  4.5 standard errors of the draws, measured at most 1.25; fixed
+  parameters, seeds and refusals), and the tests of README examples
+  17 and 18 (18 README example tests in all).
+- The suite was also run with Python 3.9, NumPy 1.22.0 and pytest
+  7.0.0 (the CI oldest-dependencies job).
+
 ## 0.6.0 (2026-11-10)
 
 ### Added
@@ -503,11 +662,11 @@ anchor lists.
   `Model` is a frozen dataclass. `units` is now left out of the hash
   (it still counts for `==`).
 
-### Behaviour changes
+### Behavior changes
 
-- Gaussian pulse in seconds (centre 0, width 1 ns, 25 samples from -3
+- Gaussian pulse in seconds (center 0, width 1 ns, 25 samples from -3
   to 3 ns, reading error 0.01): planned and fitted error bar on the
-  centre 6.686976e-12 s in 0.1.1, 5.311778e-12 s in 0.2.0 (exact
+  center 6.686976e-12 s in 0.1.1, 5.311778e-12 s in 0.2.0 (exact
   value from the analytic slopes: 5.311777e-12 s).
 - `conformal_quantile(scores, 0.7)` with 9 scores: 4th smallest score
   in 0.1.1, 3rd smallest in 0.2.0; `coverage_exact(9, 0.7)`: 0.4 in
